@@ -21,7 +21,8 @@ import (
 	"github.com/dannyaziz/lasso-money/internal/teller"
 )
 
-const Version = "0.1.0-dev"
+// Version is injected at release time via -ldflags by goreleaser.
+var Version = "0.1.0-dev"
 
 type App struct {
 	Out    io.Writer
@@ -71,7 +72,10 @@ type codedError struct {
 	exitCode  int
 	retryable bool
 	fix       string
-	err       error
+	// reported means the command already wrote its own structured envelope;
+	// Main must not emit a second one.
+	reported bool
+	err      error
 }
 
 func (e codedError) Error() string { return e.err.Error() }
@@ -105,8 +109,10 @@ func Main(args []string, out, errOut io.Writer) int {
 		return 0
 	}
 	fmt.Fprintln(errOut, err)
+	var coded codedError
+	alreadyReported := errors.As(err, &coded) && coded.reported
 	cleaned, format := parseGlobalArgs(args, "")
-	if format == "json" && !isExportInvocation(cleaned) {
+	if format == "json" && !isExportInvocation(cleaned) && !alreadyReported {
 		writeErrorEnvelope(out, commandNameFromArgs(cleaned), err)
 	}
 	return exitCode(err)
@@ -412,8 +418,10 @@ func (a App) printLLMS(full bool) error {
 		"format":          "Use --format json for stable envelopes. Legacy --json emits raw data.",
 		"security":        "Never prints Teller access tokens, cert contents, key contents, or full account numbers by default.",
 		"connection_flag": "--connection <id> is planned as the canonical selector; current MVP uses config/enrollment path overrides.",
+		"setup":           "Read SETUP.md in the repo for the agent setup playbook. `lasso doctor --format json` is the setup state machine: fix the first missing check, re-run, repeat. `lasso connect --no-open --format json` emits a connect.url event for relaying to a human.",
 		"canonical_commands": []string{
 			"lasso schema",
+			"lasso doctor --format json",
 			"lasso account list --format json",
 			"lasso balance list --format json",
 			"lasso sync run --format json",
@@ -452,6 +460,8 @@ func (a App) schema(args []string) error {
 
 func commandSchemas() map[string]any {
 	return map[string]any{
+		"doctor":             schemaEntry("doctor", "Check local setup; data is a list of checks with status ok|missing|warn|skipped and fix hints", []string{"--config"}),
+		"connect":            schemaEntry("connect", "Launch Teller Connect; with --format json emits a connect.url event line, then the final envelope", []string{"--config", "--port", "--timeout", "--no-open"}),
 		"whoami":             schemaEntry("whoami", "Print saved enrollment metadata with access token redacted", []string{"--config"}),
 		"account.list":       schemaEntry("account.list", "List live Teller accounts", []string{"--config"}),
 		"balance.list":       schemaEntry("balance.list", "List live Teller balances", []string{"--config"}),
@@ -471,8 +481,11 @@ func schemaEntry(name, description string, flags []string) map[string]any {
 }
 
 func sideEffect(name string) string {
-	if name == "whoami" {
+	if name == "whoami" || name == "doctor" {
 		return "read_local"
+	}
+	if name == "connect" {
+		return "write_local"
 	}
 	if strings.HasPrefix(name, "sync.") {
 		return "read_live_write_local_cache"
@@ -588,6 +601,16 @@ TELLER_KEY_PATH=
 	return nil
 }
 
+// doctorCheck is one step of the setup state machine. Status is one of
+// ok | missing | warn | skipped. Agents drive setup by fixing the first
+// missing check and re-running doctor; see SETUP.md.
+type doctorCheck struct {
+	Name   string `json:"name"`
+	Status string `json:"status"`
+	Detail string `json:"detail,omitempty"`
+	Fix    string `json:"fix,omitempty"`
+}
+
 func (a App) doctor(args []string) error {
 	fs := flag.NewFlagSet("doctor", flag.ContinueOnError)
 	fs.SetOutput(a.Err)
@@ -603,53 +626,145 @@ func (a App) doctor(args []string) error {
 
 	cfg, cfgErr := config.LoadEnvFile(paths.ConfigFile)
 	enrollmentPath := config.ResolveEnrollmentPath(paths, cfg)
+	dbFile := config.ExpandHome(cfg.GetDefault("TELLER_DB_PATH", paths.DBFile))
+
+	checks := doctorChecks(paths, cfg, cfgErr, enrollmentPath)
+	ready := true
+	for _, c := range checks {
+		if c.Status == "missing" {
+			ready = false
+		}
+	}
+
+	meta := map[string]any{
+		"ready":           ready,
+		"config_file":     paths.ConfigFile,
+		"data_dir":        paths.DataDir,
+		"enrollment_file": enrollmentPath,
+		"db_file":         dbFile,
+	}
+
+	if a.envelopeJSON() {
+		next := []nextAction{}
+		for _, c := range checks {
+			if c.Status == "missing" && strings.HasPrefix(c.Fix, "run `") {
+				command := strings.TrimSuffix(strings.TrimPrefix(c.Fix, "run `"), "`")
+				next = append(next, nextAction{Command: command, Description: "Fix check: " + c.Name})
+			}
+		}
+		if ready {
+			next = append(next, nextAction{Command: "lasso sync run --format json", Description: "Populate the local cache"})
+			return a.writeEnvelope("doctor", checks, meta, nil, next)
+		}
+		enc := json.NewEncoder(a.Out)
+		enc.SetIndent("", "  ")
+		_ = enc.Encode(envelope{
+			OK:            false,
+			SchemaVersion: schemaVersion,
+			Command:       "doctor",
+			Data:          checks,
+			Meta:          meta,
+			Warnings:      []string{},
+			NextActions:   next,
+			Error:         &structuredError{Code: "not_ready", Message: "doctor found missing required setup", Fix: "fix the missing checks in data, then re-run `lasso doctor --format json`"},
+		})
+		return codedError{code: "not_ready", exitCode: 4, reported: true, err: fmt.Errorf("doctor found missing required setup")}
+	}
 
 	fmt.Fprintln(a.Out, "lasso doctor")
 	fmt.Fprintf(a.Out, "config: %s\n", paths.ConfigFile)
 	fmt.Fprintf(a.Out, "data_dir: %s\n", paths.DataDir)
 	fmt.Fprintf(a.Out, "enrollment_file: %s\n", enrollmentPath)
-	fmt.Fprintf(a.Out, "db_file: %s\n", config.ExpandHome(cfg.GetDefault("TELLER_DB_PATH", paths.DBFile)))
+	fmt.Fprintf(a.Out, "db_file: %s\n", dbFile)
 	fmt.Fprintln(a.Out)
+	for _, c := range checks {
+		label := c.Status
+		if c.Status == "skipped" {
+			label = "--"
+		}
+		fmt.Fprintf(a.Out, "[%s] %s", label, c.Name)
+		if c.Detail != "" {
+			fmt.Fprintf(a.Out, ": %s", c.Detail)
+		}
+		fmt.Fprintln(a.Out)
+		if c.Fix != "" && c.Status == "missing" {
+			fmt.Fprintf(a.Out, "          %s\n", c.Fix)
+		}
+	}
+	if !ready {
+		return codedError{code: "not_ready", exitCode: 4, fix: "follow the doctor output above, then re-run `lasso doctor`", err: fmt.Errorf("doctor found missing required setup")}
+	}
+	fmt.Fprintln(a.Out, "\nready")
+	return nil
+}
 
-	ok := true
+func doctorChecks(paths config.Paths, cfg config.Env, cfgErr error, enrollmentPath string) []doctorCheck {
+	checks := []doctorCheck{}
+	add := func(name, status, detail, fix string) {
+		checks = append(checks, doctorCheck{Name: name, Status: status, Detail: detail, Fix: fix})
+	}
+
 	if cfgErr != nil {
-		ok = false
-		fmt.Fprintf(a.Out, "[missing] config file: %v\n", cfgErr)
-		fmt.Fprintln(a.Out, "          run `lasso init`")
+		add("config_file", "missing", cfgErr.Error(), "run `lasso init`")
 	} else {
-		fmt.Fprintln(a.Out, "[ok] config file exists")
-		checkFileMode(a.Out, paths.ConfigFile)
+		add("config_file", "ok", paths.ConfigFile, "")
+		checks = append(checks, fileModeCheck("config_file_permissions", paths.ConfigFile))
 	}
 
 	if cfgErr == nil {
-		ok = checkEnvPresent(a.Out, cfg, "TELLER_APPLICATION_ID") && ok
-		env := cfg.GetDefault("TELLER_ENV", "sandbox")
-		fmt.Fprintf(a.Out, "[ok] TELLER_ENV=%s\n", env)
-
-		if env != "sandbox" {
-			ok = checkEnvPresent(a.Out, cfg, "TELLER_CERT_PATH") && ok
-			ok = checkEnvPresent(a.Out, cfg, "TELLER_KEY_PATH") && ok
-			ok = checkPathIfPresent(a.Out, cfg.Get("TELLER_CERT_PATH"), "TELLER_CERT_PATH") && ok
-			ok = checkPathIfPresent(a.Out, cfg.Get("TELLER_KEY_PATH"), "TELLER_KEY_PATH") && ok
+		if cfg.Get("TELLER_APPLICATION_ID") == "" {
+			add("application_id", "missing", "TELLER_APPLICATION_ID is empty", fmt.Sprintf("set TELLER_APPLICATION_ID in %s (from https://dashboard.teller.io)", paths.ConfigFile))
 		} else {
-			fmt.Fprintln(a.Out, "[ok] sandbox mode does not require mTLS cert/key")
+			add("application_id", "ok", "TELLER_APPLICATION_ID is set", "")
+		}
+
+		env := cfg.GetDefault("TELLER_ENV", "sandbox")
+		switch env {
+		case "sandbox", "development", "production":
+			add("environment", "ok", "TELLER_ENV="+env, "")
+		default:
+			add("environment", "warn", fmt.Sprintf("unknown TELLER_ENV %q; expected sandbox, development, or production", env), "")
+		}
+
+		if env == "sandbox" {
+			add("mtls_certificate", "skipped", "sandbox does not require mTLS cert/key", "")
+		} else {
+			for _, c := range []struct{ name, key string }{{"mtls_certificate", "TELLER_CERT_PATH"}, {"mtls_key", "TELLER_KEY_PATH"}} {
+				value := cfg.Get(c.key)
+				if value == "" {
+					add(c.name, "missing", c.key+" is empty", fmt.Sprintf("set %s in %s (download from https://dashboard.teller.io)", c.key, paths.ConfigFile))
+					continue
+				}
+				expanded := config.ExpandHome(value)
+				if _, err := os.Stat(expanded); err != nil {
+					add(c.name, "missing", err.Error(), fmt.Sprintf("place the file at %s or correct %s", expanded, c.key))
+					continue
+				}
+				add(c.name, "ok", filepath.Clean(expanded), "")
+				checks = append(checks, fileModeCheck(c.name+"_permissions", expanded))
+			}
 		}
 	}
 
 	if _, err := os.Stat(enrollmentPath); err != nil {
-		ok = false
-		fmt.Fprintf(a.Out, "[missing] enrollment file: %v\n", err)
-		fmt.Fprintln(a.Out, "         run `lasso connect`")
+		add("enrollment", "missing", err.Error(), "run `lasso connect`")
 	} else {
-		fmt.Fprintln(a.Out, "[ok] enrollment file exists")
-		checkFileMode(a.Out, enrollmentPath)
+		add("enrollment", "ok", enrollmentPath, "")
+		checks = append(checks, fileModeCheck("enrollment_permissions", enrollmentPath))
 	}
+	return checks
+}
 
-	if !ok {
-		return codedError{code: "config_error", exitCode: 4, fix: "follow the doctor output above, then re-run `lasso doctor`", err: fmt.Errorf("doctor found missing required setup")}
+func fileModeCheck(name, path string) doctorCheck {
+	info, err := os.Stat(path)
+	if err != nil {
+		return doctorCheck{Name: name, Status: "skipped"}
 	}
-	fmt.Fprintln(a.Out, "ready")
-	return nil
+	mode := info.Mode().Perm()
+	if mode&0o077 != 0 {
+		return doctorCheck{Name: name, Status: "warn", Detail: fmt.Sprintf("permissions are %04o; prefer 0600 for secret-bearing files", mode), Fix: fmt.Sprintf("run `chmod 600 %s`", path)}
+	}
+	return doctorCheck{Name: name, Status: "ok", Detail: fmt.Sprintf("permissions are %04o", mode)}
 }
 
 func (a App) connect(args []string) error {
@@ -675,19 +790,42 @@ func (a App) connect(args []string) error {
 	if cfg.Get("TELLER_APPLICATION_ID") == "" {
 		return configErrorf("set TELLER_APPLICATION_ID in the config file", "TELLER_APPLICATION_ID is required; edit %s", paths.ConfigFile)
 	}
-	enrollment, err := connect.Run(context.Background(), connect.Options{
+	opts := connect.Options{
 		ApplicationID:  cfg.Get("TELLER_APPLICATION_ID"),
 		Environment:    cfg.GetDefault("TELLER_ENV", "sandbox"),
 		Port:           *port,
 		Timeout:        *timeout,
 		OpenBrowser:    !*noOpen,
 		EnrollmentPath: enrollmentPath,
+		// Progress goes to stderr; stdout is reserved for data.
 		Status: func(message string) {
-			fmt.Fprintln(a.Out, message)
+			fmt.Fprintln(a.Err, message)
 		},
-	})
+	}
+	if a.envelopeJSON() {
+		// Emit the URL as a one-line JSON event on stdout the moment the
+		// server is up, so an agent can relay it to a human (e.g. over
+		// chat) while the command blocks waiting for the browser flow.
+		opts.OnURL = func(url string) {
+			event, _ := json.Marshal(map[string]any{"event": "connect.url", "url": url, "expires_in_seconds": int(timeout.Seconds())})
+			fmt.Fprintln(a.Out, string(event))
+		}
+	}
+	enrollment, err := connect.Run(context.Background(), opts)
 	if err != nil {
 		return err
+	}
+	if a.envelopeJSON() {
+		data := map[string]any{
+			"enrollment_id":    enrollment.ID,
+			"institution_id":   enrollment.InstitutionID,
+			"institution_name": enrollment.InstitutionName,
+			"enrollment_path":  enrollmentPath,
+		}
+		return a.writeEnvelope("connect", data, map[string]any{"source": "live"}, nil, []nextAction{
+			{Command: "lasso doctor --format json", Description: "Verify setup is complete"},
+			{Command: "lasso sync run --format json", Description: "Populate the local cache"},
+		})
 	}
 	fmt.Fprintf(a.Out, "linked %s (%s)\n", fallback(enrollment.InstitutionName, "institution"), enrollment.ID)
 	fmt.Fprintf(a.Out, "saved enrollment: %s\n", enrollmentPath)
@@ -1375,42 +1513,6 @@ func loadState(configPath string, withClient bool) (runtimeState, error) {
 		state.Client = client
 	}
 	return state, nil
-}
-
-func checkEnvPresent(w io.Writer, cfg config.Env, key string) bool {
-	if cfg.Get(key) == "" {
-		fmt.Fprintf(w, "[missing] %s\n", key)
-		return false
-	}
-	fmt.Fprintf(w, "[ok] %s is set\n", key)
-	return true
-}
-
-func checkPathIfPresent(w io.Writer, value, label string) bool {
-	if value == "" {
-		return false
-	}
-	expanded := config.ExpandHome(value)
-	if _, err := os.Stat(expanded); err != nil {
-		fmt.Fprintf(w, "[missing] %s file: %v\n", label, err)
-		return false
-	}
-	fmt.Fprintf(w, "[ok] %s file exists: %s\n", label, filepath.Clean(expanded))
-	checkFileMode(w, expanded)
-	return true
-}
-
-func checkFileMode(w io.Writer, path string) {
-	info, err := os.Stat(path)
-	if err != nil {
-		return
-	}
-	mode := info.Mode().Perm()
-	if mode&0o077 != 0 {
-		fmt.Fprintf(w, "[warn] %s permissions are %04o; prefer 0600 for secret-bearing files\n", path, mode)
-		return
-	}
-	fmt.Fprintf(w, "[ok] %s permissions are %04o\n", path, mode)
 }
 
 func fallback(value, fallback string) string {
