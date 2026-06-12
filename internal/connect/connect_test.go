@@ -1,10 +1,17 @@
 package connect
 
 import (
+	"context"
+	"io"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/dannyaziz/lasso-money/internal/teller"
 )
 
 func TestCallbackRequiresTokenAndJSONContentType(t *testing.T) {
@@ -62,6 +69,77 @@ func TestCallbackRequiresTokenAndJSONContentType(t *testing.T) {
 	res := <-result
 	if res.err != nil || res.enrollment.AccessToken != "token_attacker" {
 		t.Fatalf("result = %#v", res)
+	}
+}
+
+// TestRunEndToEnd drives the full Connect flow the way a browser would:
+// receive the URL via OnURL, fetch the page, extract the one-time token,
+// and POST the enrollment back.
+func TestRunEndToEnd(t *testing.T) {
+	enrollmentPath := filepath.Join(t.TempDir(), "enrollment.json")
+	urlCh := make(chan string, 1)
+
+	type result struct {
+		enrollment teller.Enrollment
+		err        error
+	}
+	done := make(chan result, 1)
+	go func() {
+		enrollment, err := Run(context.Background(), Options{
+			ApplicationID:  "app_test",
+			Environment:    "sandbox",
+			Timeout:        10 * time.Second,
+			OpenBrowser:    false,
+			EnrollmentPath: enrollmentPath,
+			OnURL:          func(u string) { urlCh <- u },
+		})
+		done <- result{enrollment, err}
+	}()
+
+	var base string
+	select {
+	case base = <-urlCh:
+	case <-time.After(5 * time.Second):
+		t.Fatal("OnURL was never called")
+	}
+
+	resp, err := http.Get(base)
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, err := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := regexp.MustCompile(`/callback\?token=([0-9a-f]+)`).FindSubmatch(body)
+	if m == nil {
+		t.Fatalf("page does not contain a callback token:\n%s", body)
+	}
+
+	payload := `{"accessToken":"token_e2e_secret","enrollment":{"id":"enr_e2e","institution":{"id":"tb","name":"Test Bank"}}}`
+	resp, err = http.Post(base+"callback?token="+string(m[1]), "application/json", strings.NewReader(payload))
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("callback status = %d", resp.StatusCode)
+	}
+
+	res := <-done
+	if res.err != nil {
+		t.Fatal(res.err)
+	}
+	if res.enrollment.ID != "enr_e2e" || res.enrollment.InstitutionName != "Test Bank" {
+		t.Fatalf("enrollment = %#v", res.enrollment)
+	}
+	saved, err := teller.LoadEnrollment(enrollmentPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if saved.AccessToken != "token_e2e_secret" {
+		t.Fatalf("saved enrollment = %#v", saved)
 	}
 }
 
