@@ -285,7 +285,7 @@ func (s *Store) QueryTransactions(f TxFilter) ([]TransactionRow, error) {
 // unknown type keep the credit convention.
 const signedOutflow = "(CASE WHEN a.type = 'depository' THEN -cast(t.amount AS real) ELSE cast(t.amount AS real) END)"
 
-func (s *Store) Spend(groupBy, from, to string) ([]SpendRow, error) {
+func (s *Store) Spend(groupBy, from, to string, limit int) ([]SpendRow, error) {
 	var expr string
 	switch groupBy {
 	case "merchant", "counterparty", "":
@@ -309,8 +309,12 @@ func (s *Store) Spend(groupBy, from, to string) ([]SpendRow, error) {
 		where = append(where, "t.date <= ?")
 		args = append(args, to)
 	}
+	if limit <= 0 {
+		limit = 50
+	}
+	args = append(args, limit)
 	q := fmt.Sprintf(`SELECT %s AS grp, sum(%s) AS spend, count(*), coalesce(max(t.currency), max(a.currency), '')
-		FROM transactions t LEFT JOIN accounts a ON a.id=t.account_id WHERE %s GROUP BY grp ORDER BY spend DESC LIMIT 50`, expr, signedOutflow, strings.Join(where, " AND "))
+		FROM transactions t LEFT JOIN accounts a ON a.id=t.account_id WHERE %s GROUP BY grp ORDER BY spend DESC LIMIT ?`, expr, signedOutflow, strings.Join(where, " AND "))
 	rows, err := s.db.Query(q, args...)
 	if err != nil {
 		return nil, err

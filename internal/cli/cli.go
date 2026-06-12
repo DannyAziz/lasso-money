@@ -106,7 +106,7 @@ func Main(args []string, out, errOut io.Writer) int {
 	}
 	fmt.Fprintln(errOut, err)
 	cleaned, format := parseGlobalArgs(args, "")
-	if format == "json" && !isExportInvocation(args) {
+	if format == "json" && !isExportInvocation(cleaned) {
 		writeErrorEnvelope(out, commandNameFromArgs(cleaned), err)
 	}
 	return exitCode(err)
@@ -156,12 +156,11 @@ func Run(args []string) error {
 }
 
 func (a App) Run(args []string) error {
-	exportArgs := isExportInvocation(args)
 	args, a.Format = parseGlobalArgs(args, a.Format)
 	switch a.Format {
 	case "", "json", "text":
 	default:
-		if !exportArgs {
+		if !isExportInvocation(args) {
 			return usageErrorf("unsupported --format %q; use json or text", a.Format)
 		}
 	}
@@ -275,14 +274,16 @@ func parseGlobalArgs(args []string, current string) ([]string, string) {
 	if format == "" {
 		format = os.Getenv("LASSO_FORMAT")
 	}
-	// `export tx --format csv|json|jsonl` already uses --format for file format.
-	// Do not steal that flag as the envelope selector.
-	if isExportInvocation(args) {
-		return args, format
-	}
 	out := make([]string, 0, len(args))
 	for i := 0; i < len(args); i++ {
 		arg := args[i]
+		if !strings.HasPrefix(arg, "-") && isExportInvocation(args[i:]) {
+			// `export tx --format csv|json|jsonl` uses --format for the file
+			// format. Stop stripping so export keeps its own flag, even when
+			// a global --format appeared before the command.
+			out = append(out, args[i:]...)
+			return out, format
+		}
 		if arg == "--format" && i+1 < len(args) {
 			format = args[i+1]
 			i++
@@ -458,8 +459,8 @@ func commandSchemas() map[string]any {
 		"transaction.list":   schemaEntry("transaction.list", "List cached transactions, or live with --live", []string{"--config", "--account", "--since", "--from", "--to", "--merchant", "--category", "--pending", "--posted", "--limit", "--live"}),
 		"transaction.search": schemaEntry("transaction.search", "Search cached transactions", []string{"query", "--config", "--since", "--merchant", "--category", "--pending", "--posted", "--limit"}),
 		"transaction.export": schemaEntry("transaction.export", "Export cached transactions", []string{"--format csv|json|jsonl", "--out", "--since", "--status", "--merchant", "--category"}),
-		"spend.summary":      schemaEntry("spend.summary", "Summarize cached spending", []string{"--group merchant|category|account|month", "--since", "--from", "--to"}),
-		"merchant.top":       schemaEntry("merchant.top", "Show top cached merchants", []string{"--since", "--from", "--to"}),
+		"spend.summary":      schemaEntry("spend.summary", "Summarize cached spending", []string{"--group merchant|category|account|month", "--since", "--from", "--to", "--limit"}),
+		"merchant.top":       schemaEntry("merchant.top", "Show top cached merchants", []string{"--since", "--from", "--to", "--limit"}),
 		"cashflow.summary":   schemaEntry("cashflow.summary", "Show monthly cached inflow/outflow/net", []string{"--since", "--from", "--to"}),
 		"cache.status":       schemaEntry("cache.status", "Inspect local cache", []string{"--config"}),
 	}
@@ -786,7 +787,7 @@ func (a App) transactions(args []string) error {
 		if err := validateAmountFilter(*maxAmount, "--max"); err != nil {
 			return err
 		}
-		return a.cachedTransactions(*configPath, *accountSelector, store.TxFilter{From: startDate, To: endDate, Status: status, MinAmount: *minAmount, MaxAmount: *maxAmount, Category: *category, Merchant: *merchant, Limit: *limit}, *jsonOut)
+		return a.cachedTransactions("transaction.list", *configPath, *accountSelector, store.TxFilter{From: startDate, To: endDate, Status: status, MinAmount: *minAmount, MaxAmount: *maxAmount, Category: *category, Merchant: *merchant, Limit: *limit}, *jsonOut)
 	}
 	state, err := loadState(*configPath, true)
 	if err != nil {
@@ -971,7 +972,7 @@ func (a App) sync(args []string) error {
 	return nil
 }
 
-func (a App) cachedTransactions(configPath, accountSelector string, filter store.TxFilter, jsonOut bool) error {
+func (a App) cachedTransactions(command, configPath, accountSelector string, filter store.TxFilter, jsonOut bool) error {
 	state, err := loadState(configPath, false)
 	if err != nil {
 		return err
@@ -997,7 +998,7 @@ func (a App) cachedTransactions(configPath, accountSelector string, filter store
 		return err
 	}
 	if a.envelopeJSON() {
-		return a.writeRows("transaction.list", rows, len(rows), "cache", []nextAction{{Command: "lasso spend summary --since month --format json", Description: "Summarize cached spend"}})
+		return a.writeRows(command, rows, len(rows), "cache", []nextAction{{Command: "lasso spend summary --since month --format json", Description: "Summarize cached spend"}})
 	}
 	if jsonOut {
 		enc := json.NewEncoder(a.Out)
@@ -1049,7 +1050,7 @@ func (a App) search(args []string) error {
 	if err := validateAmountFilter(*maxAmount, "--max"); err != nil {
 		return err
 	}
-	return a.cachedTransactions(*configPath, "", store.TxFilter{From: startDate, To: endDate, Query: strings.Join(positionals, " "), Status: status, MinAmount: *minAmount, MaxAmount: *maxAmount, Category: *category, Merchant: *merchant, Limit: *limit}, *jsonOut)
+	return a.cachedTransactions("transaction.search", *configPath, "", store.TxFilter{From: startDate, To: endDate, Query: strings.Join(positionals, " "), Status: status, MinAmount: *minAmount, MaxAmount: *maxAmount, Category: *category, Merchant: *merchant, Limit: *limit}, *jsonOut)
 }
 
 func (a App) spend(args []string) error {
@@ -1061,6 +1062,7 @@ func (a App) spend(args []string) error {
 	from := fs.String("from", "", "start date YYYY-MM-DD")
 	to := fs.String("to", "", "end date YYYY-MM-DD; defaults to today")
 	since := fs.String("since", "month", "relative window")
+	limit := fs.Int("limit", 50, "max groups to return")
 	if err := parseFlags(fs, args); err != nil {
 		return err
 	}
@@ -1077,7 +1079,7 @@ func (a App) spend(args []string) error {
 		return err
 	}
 	defer db.Close()
-	rows, err := db.Spend(*group, startDate, endDate)
+	rows, err := db.Spend(*group, startDate, endDate, *limit)
 	if err != nil {
 		return err
 	}
@@ -1107,6 +1109,7 @@ func (a App) merchants(args []string) error {
 	from := fs.String("from", "", "start date YYYY-MM-DD")
 	to := fs.String("to", "", "end date YYYY-MM-DD; defaults to today")
 	since := fs.String("since", "90d", "relative window")
+	limit := fs.Int("limit", 50, "max merchants to return")
 	if len(args) > 0 && args[0] == "top" {
 		args = args[1:]
 	}
@@ -1126,7 +1129,7 @@ func (a App) merchants(args []string) error {
 		return err
 	}
 	defer db.Close()
-	rows, err := db.Spend("merchant", startDate, endDate)
+	rows, err := db.Spend("merchant", startDate, endDate, *limit)
 	if err != nil {
 		return err
 	}
@@ -1558,7 +1561,7 @@ func explainTellerError(err error) error {
 			return codedError{code: "usage_error", exitCode: 2, err: err}
 		case 429:
 			return codedError{code: "rate_limited", exitCode: 7, retryable: true, fix: "rate limited; retry later", err: err}
-		case 502:
+		case 502, 504:
 			return codedError{code: "upstream_unavailable", exitCode: 6, retryable: true, fix: "institution unavailable; retry later", err: err}
 		}
 		return err

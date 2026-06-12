@@ -3,6 +3,7 @@ package cli
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -14,10 +15,20 @@ import (
 	"github.com/dannyaziz/lasso-money/internal/teller"
 )
 
+// clearEnvOverrides blanks process env vars that config.Env lets override
+// config-file values, so a developer's live setup cannot leak into tests.
+func clearEnvOverrides(t *testing.T) {
+	t.Helper()
+	for _, key := range []string{"TELLER_APPLICATION_ID", "TELLER_ENV", "TELLER_CERT_PATH", "TELLER_KEY_PATH", "TELLER_ENROLLMENT_PATH", "TELLER_DB_PATH", "TELLER_BASE_URL", "LASSO_FORMAT"} {
+		t.Setenv(key, "")
+	}
+}
+
 // testSetup writes a sandbox config/enrollment and returns the config path
 // and the cache database path.
 func testSetup(t *testing.T) (string, string) {
 	t.Helper()
+	clearEnvOverrides(t)
 	dir := t.TempDir()
 	configPath := filepath.Join(dir, "config.env")
 	enrollmentPath := filepath.Join(dir, "enrollment.json")
@@ -105,7 +116,84 @@ func TestEmptyResultsEnvelopeHasEmptyDataArray(t *testing.T) {
 	}
 }
 
+func TestSearchEnvelopeReportsSearchCommand(t *testing.T) {
+	configPath, dbPath := testSetup(t)
+	seedCache(t, dbPath)
+
+	out, errOut, code := runCLI(t, "--format", "json", "search", "amazon", "--config", configPath)
+	if code != 0 {
+		t.Fatalf("exit = %d, stderr = %q", code, errOut)
+	}
+	var env struct {
+		Command string `json:"command"`
+	}
+	if err := json.Unmarshal([]byte(out), &env); err != nil {
+		t.Fatalf("unmarshal: %v\n%s", err, out)
+	}
+	if env.Command != "transaction.search" {
+		t.Fatalf("command = %q, want transaction.search", env.Command)
+	}
+}
+
+func TestExportKeepsItsFormatFlag(t *testing.T) {
+	configPath, dbPath := testSetup(t)
+	seedCache(t, dbPath)
+
+	// Plain export: --format selects the file format.
+	out, errOut, code := runCLI(t, "export", "tx", "--format", "csv", "--since", "30d", "--config", configPath)
+	if code != 0 {
+		t.Fatalf("exit = %d, stderr = %q", code, errOut)
+	}
+	if !strings.HasPrefix(out, "date,amount,") {
+		t.Fatalf("expected CSV header, got %q", out)
+	}
+
+	// A global --format before the command must not consume export's own
+	// --format; --format means two different things here.
+	out, errOut, code = runCLI(t, "--format", "json", "export", "tx", "--format", "csv", "--since", "30d", "--config", configPath)
+	if code != 0 {
+		t.Fatalf("exit = %d, stderr = %q", code, errOut)
+	}
+	if !strings.HasPrefix(out, "date,amount,") {
+		t.Fatalf("expected CSV header with leading global --format, got %q", out)
+	}
+}
+
+func TestTellerUpstreamErrorsMapToContract(t *testing.T) {
+	for _, status := range []int{502, 504} {
+		err := explainTellerError(teller.Error{StatusCode: status, Path: "/accounts"})
+		var coded codedError
+		if !errors.As(err, &coded) {
+			t.Fatalf("status %d: not a codedError: %#v", status, err)
+		}
+		if coded.code != "upstream_unavailable" || coded.exitCode != 6 || !coded.retryable {
+			t.Fatalf("status %d: coded = %#v", status, coded)
+		}
+	}
+}
+
+func TestMerchantTopAcceptsLimit(t *testing.T) {
+	configPath, dbPath := testSetup(t)
+	seedCache(t, dbPath)
+
+	out, errOut, code := runCLI(t, "--format", "json", "merchant", "top", "--since", "90d", "--limit", "5", "--config", configPath)
+	if code != 0 {
+		t.Fatalf("exit = %d, stderr = %q", code, errOut)
+	}
+	var env struct {
+		Command string            `json:"command"`
+		Data    []json.RawMessage `json:"data"`
+	}
+	if err := json.Unmarshal([]byte(out), &env); err != nil {
+		t.Fatalf("unmarshal: %v\n%s", err, out)
+	}
+	if env.Command != "merchant.top" || len(env.Data) != 1 {
+		t.Fatalf("envelope = %s", out)
+	}
+}
+
 func TestErrorsEmitEnvelopeAndExitCodes(t *testing.T) {
+	clearEnvOverrides(t)
 	missing := filepath.Join(t.TempDir(), "missing.env")
 
 	out, _, code := runCLI(t, "--format", "json", "transaction", "list", "--config", missing)
@@ -168,6 +256,7 @@ func TestDateWindow(t *testing.T) {
 }
 
 func TestParseGlobalArgs(t *testing.T) {
+	t.Setenv("LASSO_FORMAT", "")
 	args, format := parseGlobalArgs([]string{"accounts", "--format", "json"}, "")
 	if format != "json" || len(args) != 1 || args[0] != "accounts" {
 		t.Fatalf("args = %v, format = %q", args, format)

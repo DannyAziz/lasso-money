@@ -65,7 +65,7 @@ func TestStoreSyncQuerySpend(t *testing.T) {
 		t.Fatalf("cashflow = %#v", cashflow)
 	}
 
-	spend, err := s.Spend("category", "2026-06-01", "2026-06-30")
+	spend, err := s.Spend("category", "2026-06-01", "2026-06-30", 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -102,7 +102,7 @@ func TestSpendNormalizesDepositorySign(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	spend, err := s.Spend("account", "2026-06-01", "2026-06-30")
+	spend, err := s.Spend("account", "2026-06-01", "2026-06-30", 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -177,7 +177,7 @@ func TestQueryFunctionsReturnEmptySlices(t *testing.T) {
 	if err != nil || rows == nil {
 		t.Fatalf("rows = %#v, err = %v; want non-nil empty slice", rows, err)
 	}
-	spend, err := s.Spend("merchant", "", "")
+	spend, err := s.Spend("merchant", "", "", 0)
 	if err != nil || spend == nil {
 		t.Fatalf("spend = %#v, err = %v; want non-nil empty slice", spend, err)
 	}
