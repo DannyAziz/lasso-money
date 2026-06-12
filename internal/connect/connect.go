@@ -2,6 +2,9 @@ package connect
 
 import (
 	"context"
+	"crypto/rand"
+	"crypto/subtle"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"html"
@@ -55,7 +58,7 @@ const setup = TellerConnect.setup({
     el.className = "ok";
     el.textContent = "Success — saving…";
     try {
-      const resp = await fetch("/callback", {
+      const resp = await fetch("/callback?token=__TOKEN__", {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify(enrollment),
@@ -70,7 +73,7 @@ const setup = TellerConnect.setup({
   onExit: () => {
     document.getElementById("status").className = "err";
     document.getElementById("status").textContent = "Cancelled.";
-    fetch("/cancel", { method: "POST" });
+    fetch("/cancel?token=__TOKEN__", { method: "POST" });
   },
 });
 document.getElementById("go").addEventListener("click", () => setup.open());
@@ -99,8 +102,12 @@ func Run(ctx context.Context, opts Options) (teller.Enrollment, error) {
 	}
 	defer listener.Close()
 
+	token, err := randomToken()
+	if err != nil {
+		return teller.Enrollment{}, err
+	}
 	resultCh := make(chan connectResult, 1)
-	server := &http.Server{Handler: handler(opts, resultCh)}
+	server := &http.Server{Handler: handler(opts, token, resultCh)}
 	go func() { _ = server.Serve(listener) }()
 	defer func() {
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
@@ -151,11 +158,26 @@ func listen(port int) (net.Listener, error) {
 	return net.Listen("tcp", "127.0.0.1:0")
 }
 
-func handler(opts Options, result chan<- connectResult) http.Handler {
+func handler(opts Options, token string, result chan<- connectResult) http.Handler {
 	mux := http.NewServeMux()
 	page := pageTemplate
 	page = replace(page, "__APPID__", opts.ApplicationID)
 	page = replace(page, "__ENV__", opts.Environment)
+	page = replace(page, "__TOKEN__", token)
+	// The one-time token plus the JSON content-type requirement stop other
+	// local processes and cross-origin form posts (e.g. the text/plain JSON
+	// smuggling trick) from planting or cancelling an enrollment.
+	authorized := func(r *http.Request) bool {
+		got := r.URL.Query().Get("token")
+		return subtle.ConstantTimeCompare([]byte(got), []byte(token)) == 1
+	}
+	// Only the first result matters; never block a handler on the channel.
+	deliver := func(res connectResult) {
+		select {
+		case result <- res:
+		default:
+		}
+	}
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/" && r.URL.Path != "/index.html" {
 			http.NotFound(w, r)
@@ -169,29 +191,49 @@ func handler(opts Options, result chan<- connectResult) http.Handler {
 			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 			return
 		}
+		if !authorized(r) {
+			http.Error(w, "forbidden", http.StatusForbidden)
+			return
+		}
+		if ct := r.Header.Get("Content-Type"); !strings.HasPrefix(ct, "application/json") {
+			http.Error(w, "unsupported content type", http.StatusUnsupportedMediaType)
+			return
+		}
 		defer r.Body.Close()
 		var payload map[string]any
 		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
-			result <- connectResult{err: fmt.Errorf("invalid Connect JSON: %w", err)}
+			deliver(connectResult{err: fmt.Errorf("invalid Connect JSON: %w", err)})
 			http.Error(w, "bad json", http.StatusBadRequest)
 			return
 		}
 		enrollment, err := teller.NormalizeConnectPayload(payload)
 		if err != nil {
-			result <- connectResult{err: err}
+			deliver(connectResult{err: err})
 			http.Error(w, "bad enrollment", http.StatusBadRequest)
 			return
 		}
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{"ok":true}`))
-		result <- connectResult{enrollment: enrollment}
+		deliver(connectResult{enrollment: enrollment})
 	})
 	mux.HandleFunc("/cancel", func(w http.ResponseWriter, r *http.Request) {
+		if !authorized(r) {
+			http.Error(w, "forbidden", http.StatusForbidden)
+			return
+		}
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{"ok":true}`))
-		result <- connectResult{err: fmt.Errorf("Teller Connect cancelled")}
+		deliver(connectResult{err: fmt.Errorf("Teller Connect cancelled")})
 	})
 	return mux
+}
+
+func randomToken() (string, error) {
+	b := make([]byte, 16)
+	if _, err := rand.Read(b); err != nil {
+		return "", fmt.Errorf("generate connect token: %w", err)
+	}
+	return hex.EncodeToString(b), nil
 }
 
 func replace(s, old, value string) string {

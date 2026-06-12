@@ -4,6 +4,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 )
 
 func TestListAccountsAndBalances(t *testing.T) {
@@ -41,5 +42,54 @@ func TestListAccountsAndBalances(t *testing.T) {
 	}
 	if balance.Ledger != "123.45" || balance.Available != "100.00" {
 		t.Fatalf("balance = %#v", balance)
+	}
+}
+
+func TestGetRetriesRetryableStatuses(t *testing.T) {
+	attempts := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		attempts++
+		if attempts == 1 {
+			w.WriteHeader(http.StatusBadGateway)
+			_, _ = w.Write([]byte(`{"error":{"code":"bad_gateway","message":"institution unavailable"}}`))
+			return
+		}
+		_, _ = w.Write([]byte(`[]`))
+	}))
+	defer server.Close()
+
+	client, err := NewClient(Options{BaseURL: server.URL, Env: "sandbox"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	client.retryDelay = []time.Duration{0, 0}
+	accounts, err := client.ListAccounts(Enrollment{AccessToken: "token_test"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if attempts != 2 || len(accounts) != 0 {
+		t.Fatalf("attempts = %d, accounts = %#v", attempts, accounts)
+	}
+}
+
+func TestGetDoesNotRetryAuthErrors(t *testing.T) {
+	attempts := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		attempts++
+		w.WriteHeader(http.StatusForbidden)
+		_, _ = w.Write([]byte(`{"error":{"code":"forbidden","message":"invalid token"}}`))
+	}))
+	defer server.Close()
+
+	client, err := NewClient(Options{BaseURL: server.URL, Env: "sandbox"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	client.retryDelay = []time.Duration{0, 0}
+	if _, err := client.ListAccounts(Enrollment{AccessToken: "token_test"}); err == nil {
+		t.Fatal("expected error")
+	}
+	if attempts != 1 {
+		t.Fatalf("attempts = %d, want 1", attempts)
 	}
 }

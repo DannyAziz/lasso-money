@@ -1,6 +1,6 @@
 module github.com/dannyaziz/lasso-money
 
-go 1.26.2
+go 1.26
 
 require modernc.org/sqlite v1.52.0
 

@@ -106,14 +106,3 @@ func LoadEnvFile(path string) (Env, error) {
 	}
 	return env, nil
 }
-
-func LoadOptionalEnvFile(path string) (Env, error) {
-	env, err := LoadEnvFile(path)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return Env{}, err
-		}
-		return Env{}, err
-	}
-	return env, nil
-}

@@ -3,6 +3,7 @@ package teller
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -54,7 +55,30 @@ func TestSaveLoadEnrollmentPermissions(t *testing.T) {
 }
 
 func TestMaskToken(t *testing.T) {
-	if got := MaskToken("token_1234567890"); got != "token_…7890" {
-		t.Fatalf("MaskToken = %q", got)
+	cases := map[string]string{
+		"token_1234567890": "token_…7890",
+		"short":            "sh…",
+		"ab":               "…",
+		"a":                "…",
+		"":                 "",
+	}
+	for token, want := range cases {
+		if got := MaskToken(token); got != want {
+			t.Fatalf("MaskToken(%q) = %q, want %q", token, got, want)
+		}
+	}
+}
+
+func TestNormalizeConnectPayloadFallbackIDIsNotTokenDerived(t *testing.T) {
+	token := "token_1234567890abcdef"
+	enrollment, err := NormalizeConnectPayload(map[string]any{"accessToken": token})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if enrollment.ID == "" {
+		t.Fatal("expected fallback enrollment ID")
+	}
+	if strings.Contains(token, strings.TrimPrefix(enrollment.ID, "local_")) {
+		t.Fatalf("fallback ID %q leaks the access token", enrollment.ID)
 	}
 }

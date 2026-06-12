@@ -3,6 +3,7 @@ package store
 import (
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/dannyaziz/lasso-money/internal/teller"
 )
@@ -31,10 +32,11 @@ func TestStoreSyncQuerySpend(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	status, err := s.CacheStatus()
+	summary, err := s.CacheSummary()
 	if err != nil {
 		t.Fatal(err)
 	}
+	status := summary.Counts
 	if status["accounts"] != 1 || status["balances"] != 1 || status["transactions"] != 2 {
 		t.Fatalf("status = %#v", status)
 	}
@@ -69,5 +71,118 @@ func TestStoreSyncQuerySpend(t *testing.T) {
 	}
 	if len(spend) != 2 || spend[0].Spend < spend[1].Spend {
 		t.Fatalf("spend = %#v", spend)
+	}
+}
+
+func TestSpendNormalizesDepositorySign(t *testing.T) {
+	s, err := Open(filepath.Join(t.TempDir(), "test.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	if err := s.Migrate(); err != nil {
+		t.Fatal(err)
+	}
+
+	credit := teller.Account{ID: "acc_credit", Name: "Gold Card", Type: "credit", Currency: "USD"}
+	checking := teller.Account{ID: "acc_checking", Name: "Checking", Type: "depository", Currency: "USD"}
+	if err := s.UpsertAccounts([]teller.Account{credit, checking}); err != nil {
+		t.Fatal(err)
+	}
+	// Credit charges arrive positive; depository debits arrive negative.
+	if err := s.UpsertTransactions(credit, []teller.Transaction{
+		{ID: "tx_c1", Amount: "20.00", Date: "2026-06-10", Description: "Coffee", Status: "posted"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.UpsertTransactions(checking, []teller.Transaction{
+		{ID: "tx_d1", Amount: "-30.00", Date: "2026-06-10", Description: "Groceries", Status: "posted"},
+		{ID: "tx_d2", Amount: "500.00", Date: "2026-06-10", Description: "Payroll", Status: "posted"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	spend, err := s.Spend("account", "2026-06-01", "2026-06-30")
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := map[string]float64{}
+	for _, r := range spend {
+		got[r.Group] = r.Spend
+	}
+	if got["Gold Card"] != 20 || got["Checking"] != 30 {
+		t.Fatalf("spend = %#v", spend)
+	}
+
+	cashflow, err := s.Cashflow("2026-06-01", "2026-06-30")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(cashflow) != 1 {
+		t.Fatalf("cashflow = %#v", cashflow)
+	}
+	if cashflow[0].Outflow != 50 || cashflow[0].Inflow != 500 || cashflow[0].Net != 450 {
+		t.Fatalf("cashflow = %#v", cashflow[0])
+	}
+}
+
+func TestIncrementalStartDateAdvances(t *testing.T) {
+	s, err := Open(filepath.Join(t.TempDir(), "test.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	if err := s.Migrate(); err != nil {
+		t.Fatal(err)
+	}
+
+	// No prior runs: fall back N days.
+	start, err := s.IncrementalStartDate("acc_1", 10, 90)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := time.Now().AddDate(0, 0, -90).Format(time.DateOnly); start != want {
+		t.Fatalf("fallback start = %q, want %q", start, want)
+	}
+
+	// After a successful run, the window must anchor on its end date, not
+	// its start date, so repeated incremental syncs advance.
+	end := time.Now().Format(time.DateOnly)
+	runID, err := s.StartSyncRun("acc_1", start, end)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.FinishSyncRun(runID, "ok", 1, ""); err != nil {
+		t.Fatal(err)
+	}
+	next, err := s.IncrementalStartDate("acc_1", 10, 90)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := time.Now().AddDate(0, 0, -10).Format(time.DateOnly); next != want {
+		t.Fatalf("incremental start = %q, want %q", next, want)
+	}
+}
+
+func TestQueryFunctionsReturnEmptySlices(t *testing.T) {
+	s, err := Open(filepath.Join(t.TempDir(), "test.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	if err := s.Migrate(); err != nil {
+		t.Fatal(err)
+	}
+	rows, err := s.QueryTransactions(TxFilter{Limit: 10})
+	if err != nil || rows == nil {
+		t.Fatalf("rows = %#v, err = %v; want non-nil empty slice", rows, err)
+	}
+	spend, err := s.Spend("merchant", "", "")
+	if err != nil || spend == nil {
+		t.Fatalf("spend = %#v, err = %v; want non-nil empty slice", spend, err)
+	}
+	cashflow, err := s.Cashflow("", "")
+	if err != nil || cashflow == nil {
+		t.Fatalf("cashflow = %#v, err = %v; want non-nil empty slice", cashflow, err)
 	}
 }
