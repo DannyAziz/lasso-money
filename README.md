@@ -45,9 +45,12 @@ Implemented:
 - cached transaction filters: status, min/max amount, category, merchant/counterparty
 - `export tx` cached CSV/JSON/JSONL export
 - `cache status` cache inspection
+- structured error envelopes (`ok: false`) on stdout with `--format json`
+- semantic exit codes (see `lasso --llms-full`)
+- retry with backoff for retryable Teller responses (429/502/504, network errors)
 - Config env parser: `internal/config`
 - Teller API client/enrollment handling: `internal/teller`
-- Tests for config parsing, enrollment storage, and Teller client request behavior
+- Tests for config parsing, enrollment storage, Teller client request behavior, store queries, and CLI parsing/envelopes
 
 ## Local config
 
@@ -123,6 +126,35 @@ Envelope shape:
   "next_actions": []
 }
 ```
+
+Errors with `--format json` emit an `ok: false` envelope on stdout and exit
+with a semantic code (0 success, 2 usage, 3 not found, 4 auth/config,
+5 conflict, 6 upstream unavailable, 7 retryable network error):
+
+```json
+{
+  "ok": false,
+  "schema_version": "2026-06-12",
+  "command": "transaction.list",
+  "error": {
+    "code": "config_error",
+    "message": "load config ~/.lasso/config.env: no such file or directory",
+    "retryable": false,
+    "fix": "run `lasso init` to create a config"
+  },
+  "warnings": [],
+  "next_actions": []
+}
+```
+
+## Sign conventions
+
+Teller signs amounts from the account's perspective: credit-card charges
+arrive positive, while depository (checking/savings) debits arrive negative.
+`spend`, `merchant top`, and `cashflow` normalize this per account type so
+that **positive always means money out** — credit amounts are used as-is and
+depository amounts are negated. Accounts with an unknown type are treated as
+credit. Raw `transaction list` output keeps Teller's original signs.
 
 Legacy aliases still work:
 

@@ -3,6 +3,7 @@ package teller
 import (
 	"crypto/tls"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -13,9 +14,14 @@ import (
 
 const DefaultBaseURL = "https://api.teller.io"
 
+// maxTransactionPages bounds from_id pagination so a server that ignores
+// from_id cannot loop forever. 40 pages × 500 = 20k transactions per window.
+const maxTransactionPages = 40
+
 type Client struct {
 	baseURL    string
 	httpClient *http.Client
+	retryDelay []time.Duration
 }
 
 type Options struct {
@@ -101,6 +107,7 @@ func NewClient(opts Options) (*Client, error) {
 			Timeout:   30 * time.Second,
 			Transport: transport,
 		},
+		retryDelay: []time.Duration{2 * time.Second, 5 * time.Second},
 	}, nil
 }
 
@@ -164,22 +171,59 @@ func (c *Client) ListTransactions(enrollment Enrollment, accountID, startDate, e
 		params.Set("end_date", endDate)
 	}
 
-	var all []Transaction
-	for {
-		var page []Transaction
-		if err := c.get("/accounts/"+url.PathEscape(accountID)+"/transactions", params, enrollment.AccessToken, &page); err != nil {
+	all := []Transaction{}
+	for page := 0; ; page++ {
+		if page >= maxTransactionPages {
+			return nil, fmt.Errorf("transaction pagination exceeded %d pages for account %s; narrow the date window", maxTransactionPages, accountID)
+		}
+		var batch []Transaction
+		if err := c.get("/accounts/"+url.PathEscape(accountID)+"/transactions", params, enrollment.AccessToken, &batch); err != nil {
 			return nil, err
 		}
-		all = append(all, page...)
-		if len(page) < count || len(page) == 0 {
+		all = append(all, batch...)
+		if len(batch) < count {
 			break
 		}
-		params.Set("from_id", page[len(page)-1].ID)
+		params.Set("from_id", batch[len(batch)-1].ID)
 	}
 	return all, nil
 }
 
+// get retries on network errors and retryable Teller statuses (429/502/504);
+// Teller documents that initial transaction fetches can time out and should
+// be retried after a few seconds.
 func (c *Client) get(path string, params url.Values, accessToken string, out any) error {
+	var lastErr error
+	for attempt := 0; attempt <= len(c.retryDelay); attempt++ {
+		if attempt > 0 {
+			time.Sleep(c.retryDelay[attempt-1])
+		}
+		err := c.getOnce(path, params, accessToken, out)
+		if err == nil {
+			return nil
+		}
+		lastErr = err
+		if !retryable(err) {
+			return err
+		}
+	}
+	return lastErr
+}
+
+func retryable(err error) bool {
+	var tellerErr Error
+	if errors.As(err, &tellerErr) {
+		switch tellerErr.StatusCode {
+		case 429, 502, 504:
+			return true
+		}
+		return false
+	}
+	var urlErr *url.Error
+	return errors.As(err, &urlErr)
+}
+
+func (c *Client) getOnce(path string, params url.Values, accessToken string, out any) error {
 	endpoint := c.baseURL + path
 	if len(params) > 0 {
 		endpoint += "?" + params.Encode()

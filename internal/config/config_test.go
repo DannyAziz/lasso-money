@@ -7,6 +7,11 @@ import (
 )
 
 func TestLoadEnvFile(t *testing.T) {
+	// Env.Get lets process env beat file values; blank them so a developer's
+	// live Teller setup cannot leak into this test.
+	for _, key := range []string{"TELLER_APPLICATION_ID", "TELLER_ENV", "TELLER_CERT_PATH"} {
+		t.Setenv(key, "")
+	}
 	dir := t.TempDir()
 	path := filepath.Join(dir, "config.env")
 	if err := os.WriteFile(path, []byte("# comment\nTELLER_APPLICATION_ID=app_test\nexport TELLER_ENV=development\nTELLER_CERT_PATH=\"~/cert.pem\"\n"), 0o600); err != nil {

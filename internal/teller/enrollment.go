@@ -1,6 +1,8 @@
 package teller
 
 import (
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -54,6 +56,9 @@ func MaskToken(token string) string {
 		return ""
 	}
 	if len(token) <= 10 {
+		if len(token) <= 2 {
+			return "…"
+		}
 		return token[:2] + "…"
 	}
 	return token[:6] + "…" + token[len(token)-4:]
@@ -77,13 +82,19 @@ func NormalizeConnectPayload(payload map[string]any) (Enrollment, error) {
 		}
 	}
 	if enrollment.ID == "" {
-		if len(accessToken) >= 16 {
-			enrollment.ID = accessToken[:16]
-		} else {
-			enrollment.ID = accessToken
-		}
+		// The ID is printed unredacted by whoami/connect, so it must never be
+		// derived from the secret access token.
+		enrollment.ID = "local_" + randomHex(6)
 	}
 	return enrollment, nil
+}
+
+func randomHex(n int) string {
+	b := make([]byte, n)
+	if _, err := rand.Read(b); err != nil {
+		return "unknown"
+	}
+	return hex.EncodeToString(b)
 }
 
 func writeSecretFile(path string, data []byte) error {

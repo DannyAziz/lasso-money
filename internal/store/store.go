@@ -91,6 +91,9 @@ func Open(path string) (*Store, error) {
 	if err != nil {
 		return nil, err
 	}
+	// PRAGMAs are per-connection; cap the pool at one connection so they
+	// apply to every statement. SQLite is single-writer anyway.
+	db.SetMaxOpenConns(1)
 	s := &Store{db: db}
 	if _, err := db.Exec(`PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON;`); err != nil {
 		_ = db.Close()
@@ -178,8 +181,10 @@ func (s *Store) FinishSyncRun(id int64, status string, fetched int, errMsg strin
 }
 
 func (s *Store) IncrementalStartDate(accountID string, overlapDays int, fallbackDays int) (string, error) {
+	// Anchor on the last successful run's end date so the window advances;
+	// anchoring on start_date would re-fetch the full history every sync.
 	var last string
-	err := s.db.QueryRow(`SELECT coalesce(max(start_date),'') FROM sync_runs WHERE account_id=? AND status='ok'`, accountID).Scan(&last)
+	err := s.db.QueryRow(`SELECT coalesce(max(end_date),'') FROM sync_runs WHERE account_id=? AND status='ok'`, accountID).Scan(&last)
 	if err != nil {
 		return "", err
 	}
@@ -199,7 +204,7 @@ func (s *Store) CachedAccounts() ([]teller.Account, error) {
 		return nil, err
 	}
 	defer rows.Close()
-	var out []teller.Account
+	out := []teller.Account{}
 	for rows.Next() {
 		var a teller.Account
 		if err := rows.Scan(&a.ID, &a.EnrollmentID, &a.InstitutionID, &a.InstitutionName, &a.Name, &a.Type, &a.Subtype, &a.Currency, &a.LastFour, &a.Status); err != nil {
@@ -263,7 +268,7 @@ func (s *Store) QueryTransactions(f TxFilter) ([]TransactionRow, error) {
 		return nil, err
 	}
 	defer rows.Close()
-	var out []TransactionRow
+	out := []TransactionRow{}
 	for rows.Next() {
 		var r TransactionRow
 		if err := rows.Scan(&r.ID, &r.AccountID, &r.AccountName, &r.AccountLastFour, &r.Amount, &r.Currency, &r.Date, &r.Description, &r.CounterpartyName, &r.Category, &r.Status, &r.Type, &r.RunningBalance); err != nil {
@@ -274,8 +279,14 @@ func (s *Store) QueryTransactions(f TxFilter) ([]TransactionRow, error) {
 	return out, rows.Err()
 }
 
-func (s *Store) Spend(groupBy, from, to string) ([]SpendRow, error) {
-	expr := "coalesce(counterparty_name, description, 'unknown')"
+// signedOutflow normalizes Teller's account-perspective amounts so positive
+// always means money out: credit-account charges are already positive, while
+// depository debits arrive negative and must be flipped. Accounts with an
+// unknown type keep the credit convention.
+const signedOutflow = "(CASE WHEN a.type = 'depository' THEN -cast(t.amount AS real) ELSE cast(t.amount AS real) END)"
+
+func (s *Store) Spend(groupBy, from, to string, limit int) ([]SpendRow, error) {
+	var expr string
 	switch groupBy {
 	case "merchant", "counterparty", "":
 		expr = "coalesce(nullif(counterparty_name,''), nullif(description,''), 'unknown')"
@@ -288,7 +299,7 @@ func (s *Store) Spend(groupBy, from, to string) ([]SpendRow, error) {
 	default:
 		return nil, fmt.Errorf("unsupported --group %q; use merchant, category, account, or month", groupBy)
 	}
-	where := []string{"cast(t.amount as real) > 0"}
+	where := []string{signedOutflow + " > 0"}
 	args := []any{}
 	if from != "" {
 		where = append(where, "t.date >= ?")
@@ -298,14 +309,18 @@ func (s *Store) Spend(groupBy, from, to string) ([]SpendRow, error) {
 		where = append(where, "t.date <= ?")
 		args = append(args, to)
 	}
-	q := fmt.Sprintf(`SELECT %s AS grp, sum(cast(t.amount as real)) AS spend, count(*), coalesce(max(t.currency), max(a.currency), '')
-		FROM transactions t LEFT JOIN accounts a ON a.id=t.account_id WHERE %s GROUP BY grp ORDER BY spend DESC LIMIT 50`, expr, strings.Join(where, " AND "))
+	if limit <= 0 {
+		limit = 50
+	}
+	args = append(args, limit)
+	q := fmt.Sprintf(`SELECT %s AS grp, sum(%s) AS spend, count(*), coalesce(max(t.currency), max(a.currency), '')
+		FROM transactions t LEFT JOIN accounts a ON a.id=t.account_id WHERE %s GROUP BY grp ORDER BY spend DESC LIMIT ?`, expr, signedOutflow, strings.Join(where, " AND "))
 	rows, err := s.db.Query(q, args...)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	var out []SpendRow
+	out := []SpendRow{}
 	for rows.Next() {
 		var r SpendRow
 		if err := rows.Scan(&r.Group, &r.Spend, &r.Count, &r.Currency); err != nil {
@@ -320,17 +335,17 @@ func (s *Store) Cashflow(from, to string) ([]CashflowRow, error) {
 	where := []string{"1=1"}
 	args := []any{}
 	if from != "" {
-		where = append(where, "date >= ?")
+		where = append(where, "t.date >= ?")
 		args = append(args, from)
 	}
 	if to != "" {
-		where = append(where, "date <= ?")
+		where = append(where, "t.date <= ?")
 		args = append(args, to)
 	}
 	q := `SELECT substr(t.date,1,7) AS month,
-		sum(CASE WHEN cast(t.amount as real) < 0 THEN -cast(t.amount as real) ELSE 0 END) AS inflow,
-		sum(CASE WHEN cast(t.amount as real) > 0 THEN cast(t.amount as real) ELSE 0 END) AS outflow,
-		sum(-cast(t.amount as real)) AS net,
+		sum(CASE WHEN ` + signedOutflow + ` < 0 THEN -` + signedOutflow + ` ELSE 0 END) AS inflow,
+		sum(CASE WHEN ` + signedOutflow + ` > 0 THEN ` + signedOutflow + ` ELSE 0 END) AS outflow,
+		sum(-` + signedOutflow + `) AS net,
 		count(*), coalesce(max(t.currency), max(a.currency), '')
 		FROM transactions t LEFT JOIN accounts a ON a.id=t.account_id WHERE ` + strings.Join(where, " AND ") + ` GROUP BY month ORDER BY month DESC`
 	rows, err := s.db.Query(q, args...)
@@ -338,7 +353,7 @@ func (s *Store) Cashflow(from, to string) ([]CashflowRow, error) {
 		return nil, err
 	}
 	defer rows.Close()
-	var out []CashflowRow
+	out := []CashflowRow{}
 	for rows.Next() {
 		var r CashflowRow
 		if err := rows.Scan(&r.Month, &r.Inflow, &r.Outflow, &r.Net, &r.Count, &r.Currency); err != nil {
@@ -361,14 +376,6 @@ func (s *Store) CacheSummary() (CacheSummary, error) {
 	summary := CacheSummary{Counts: counts}
 	_ = s.db.QueryRow(`SELECT coalesce(finished_at,''), coalesce(start_date,''), coalesce(end_date,''), coalesce(status,'') FROM sync_runs ORDER BY id DESC LIMIT 1`).Scan(&summary.LastSyncAt, &summary.LastSyncStart, &summary.LastSyncEnd, &summary.LastSyncStatus)
 	return summary, nil
-}
-
-func (s *Store) CacheStatus() (map[string]int, error) {
-	summary, err := s.CacheSummary()
-	if err != nil {
-		return nil, err
-	}
-	return summary.Counts, nil
 }
 
 func counterpartyName(details map[string]any) string {

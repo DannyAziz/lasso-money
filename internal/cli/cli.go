@@ -8,6 +8,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -63,6 +64,92 @@ type runtimeState struct {
 	Client         *teller.Client
 }
 
+// codedError carries the agent contract advertised by --llms-full: a stable
+// error code, a semantic exit code, and an optional fix hint.
+type codedError struct {
+	code      string
+	exitCode  int
+	retryable bool
+	fix       string
+	err       error
+}
+
+func (e codedError) Error() string { return e.err.Error() }
+func (e codedError) Unwrap() error { return e.err }
+
+func usageErrorf(format string, a ...any) error {
+	return codedError{code: "usage_error", exitCode: 2, err: fmt.Errorf(format, a...)}
+}
+
+func notFoundErrorf(format string, a ...any) error {
+	return codedError{code: "not_found", exitCode: 3, err: fmt.Errorf(format, a...)}
+}
+
+func configErrorf(fix, format string, a ...any) error {
+	return codedError{code: "config_error", exitCode: 4, fix: fix, err: fmt.Errorf(format, a...)}
+}
+
+func conflictErrorf(format string, a ...any) error {
+	return codedError{code: "already_exists", exitCode: 5, err: fmt.Errorf(format, a...)}
+}
+
+// Main runs the CLI and returns the process exit code, printing errors as a
+// structured envelope on stdout when --format json is in effect.
+func Main(args []string, out, errOut io.Writer) int {
+	app := App{Out: out, Err: errOut}
+	err := app.Run(args)
+	if err == nil {
+		return 0
+	}
+	if errors.Is(err, flag.ErrHelp) {
+		return 0
+	}
+	fmt.Fprintln(errOut, err)
+	cleaned, format := parseGlobalArgs(args, "")
+	if format == "json" && !isExportInvocation(cleaned) {
+		writeErrorEnvelope(out, commandNameFromArgs(cleaned), err)
+	}
+	return exitCode(err)
+}
+
+func exitCode(err error) int {
+	var coded codedError
+	if errors.As(err, &coded) {
+		return coded.exitCode
+	}
+	return 1
+}
+
+func writeErrorEnvelope(w io.Writer, command string, err error) {
+	se := structuredError{Code: "general_error", Message: err.Error()}
+	var coded codedError
+	if errors.As(err, &coded) {
+		se.Code, se.Retryable, se.Fix = coded.code, coded.retryable, coded.fix
+	}
+	enc := json.NewEncoder(w)
+	enc.SetIndent("", "  ")
+	_ = enc.Encode(envelope{OK: false, SchemaVersion: schemaVersion, Command: command, Warnings: []string{}, NextActions: []nextAction{}, Error: &se})
+}
+
+// commandNameFromArgs maps the leading non-flag tokens to a canonical
+// command name like "transaction.list" for the error envelope.
+func commandNameFromArgs(args []string) string {
+	words := make([]string, 0, 2)
+	for _, arg := range args {
+		if strings.HasPrefix(arg, "-") {
+			break
+		}
+		words = append(words, arg)
+		if len(words) == 2 {
+			break
+		}
+	}
+	if len(words) == 0 {
+		return ""
+	}
+	return strings.Join(schemaArgsFromCommand(words), ".")
+}
+
 func Run(args []string) error {
 	app := App{Out: os.Stdout, Err: os.Stderr}
 	return app.Run(args)
@@ -70,6 +157,13 @@ func Run(args []string) error {
 
 func (a App) Run(args []string) error {
 	args, a.Format = parseGlobalArgs(args, a.Format)
+	switch a.Format {
+	case "", "json", "text":
+	default:
+		if !isExportInvocation(args) {
+			return usageErrorf("unsupported --format %q; use json or text", a.Format)
+		}
+	}
 	if len(args) == 0 {
 		a.printHelp(a.Out)
 		return nil
@@ -128,7 +222,7 @@ func (a App) Run(args []string) error {
 	case "cache":
 		return a.cache(args[1:])
 	default:
-		return fmt.Errorf("unknown command %q\n\nrun `lasso help` for usage", args[0])
+		return usageErrorf("unknown command %q\n\nrun `lasso help` for usage", args[0])
 	}
 }
 
@@ -169,19 +263,27 @@ Agent output:
 	fmt.Fprintln(w)
 }
 
+// isExportInvocation reports whether args invoke `export tx` or
+// `transaction export`, which use --format for the file format.
+func isExportInvocation(args []string) bool {
+	return len(args) > 0 && (args[0] == "export" || (len(args) > 1 && args[0] == "transaction" && args[1] == "export"))
+}
+
 func parseGlobalArgs(args []string, current string) ([]string, string) {
 	format := current
 	if format == "" {
 		format = os.Getenv("LASSO_FORMAT")
 	}
-	// `export tx --format csv|json|jsonl` already uses --format for file format.
-	// Do not steal that flag as the envelope selector.
-	if len(args) > 0 && (args[0] == "export" || (len(args) > 1 && args[0] == "transaction" && args[1] == "export")) {
-		return args, format
-	}
 	out := make([]string, 0, len(args))
 	for i := 0; i < len(args); i++ {
 		arg := args[i]
+		if !strings.HasPrefix(arg, "-") && isExportInvocation(args[i:]) {
+			// `export tx --format csv|json|jsonl` uses --format for the file
+			// format. Stop stripping so export keeps its own flag, even when
+			// a global --format appeared before the command.
+			out = append(out, args[i:]...)
+			return out, format
+		}
 		if arg == "--format" && i+1 < len(args) {
 			format = args[i+1]
 			i++
@@ -258,14 +360,49 @@ func schemaArgsFromCommand(args []string) []string {
 	return clean[:1]
 }
 
-func (a App) writeEnvelope(command string, data any, meta map[string]any, next []nextAction) error {
+// parseFlags wraps fs.Parse so flag errors map to the usage exit code.
+func parseFlags(fs *flag.FlagSet, args []string) error {
+	if err := fs.Parse(args); err != nil {
+		if errors.Is(err, flag.ErrHelp) {
+			return err
+		}
+		return usageErrorf("%v", err)
+	}
+	return nil
+}
+
+// parseWithPositionals parses flags while collecting positional arguments,
+// even when flags follow them. The stdlib flag package stops at the first
+// non-flag token, which silently ignored everything after a query word.
+func parseWithPositionals(fs *flag.FlagSet, args []string) ([]string, error) {
+	var positionals []string
+	rest := args
+	for {
+		if err := parseFlags(fs, rest); err != nil {
+			return nil, err
+		}
+		if fs.NArg() == 0 {
+			return positionals, nil
+		}
+		positionals = append(positionals, fs.Arg(0))
+		rest = fs.Args()[1:]
+	}
+}
+
+func (a App) writeEnvelope(command string, data any, meta map[string]any, warnings []string, next []nextAction) error {
+	if warnings == nil {
+		warnings = []string{}
+	}
+	if next == nil {
+		next = []nextAction{}
+	}
 	enc := json.NewEncoder(a.Out)
 	enc.SetIndent("", "  ")
-	return enc.Encode(envelope{OK: true, SchemaVersion: schemaVersion, Command: command, Data: data, Meta: meta, Warnings: []string{}, NextActions: next})
+	return enc.Encode(envelope{OK: true, SchemaVersion: schemaVersion, Command: command, Data: data, Meta: meta, Warnings: warnings, NextActions: next})
 }
 
 func (a App) writeRows(command string, rows any, count int, source string, next []nextAction) error {
-	return a.writeEnvelope(command, rows, map[string]any{"count": count, "source": source, "truncated": false}, next)
+	return a.writeEnvelope(command, rows, map[string]any{"count": count, "source": source, "truncated": false}, nil, next)
 }
 
 func (a App) printLLMS(full bool) error {
@@ -306,7 +443,7 @@ func (a App) schema(args []string) error {
 			enc.SetIndent("", "  ")
 			return enc.Encode(s)
 		}
-		return fmt.Errorf("unknown schema %q", name)
+		return notFoundErrorf("unknown schema %q", name)
 	}
 	enc := json.NewEncoder(a.Out)
 	enc.SetIndent("", "  ")
@@ -315,14 +452,15 @@ func (a App) schema(args []string) error {
 
 func commandSchemas() map[string]any {
 	return map[string]any{
+		"whoami":             schemaEntry("whoami", "Print saved enrollment metadata with access token redacted", []string{"--config"}),
 		"account.list":       schemaEntry("account.list", "List live Teller accounts", []string{"--config"}),
 		"balance.list":       schemaEntry("balance.list", "List live Teller balances", []string{"--config"}),
 		"sync.run":           schemaEntry("sync.run", "Sync Teller accounts, balances, and transactions into local SQLite", []string{"--config", "--account", "--since", "--from", "--to"}),
 		"transaction.list":   schemaEntry("transaction.list", "List cached transactions, or live with --live", []string{"--config", "--account", "--since", "--from", "--to", "--merchant", "--category", "--pending", "--posted", "--limit", "--live"}),
 		"transaction.search": schemaEntry("transaction.search", "Search cached transactions", []string{"query", "--config", "--since", "--merchant", "--category", "--pending", "--posted", "--limit"}),
 		"transaction.export": schemaEntry("transaction.export", "Export cached transactions", []string{"--format csv|json|jsonl", "--out", "--since", "--status", "--merchant", "--category"}),
-		"spend.summary":      schemaEntry("spend.summary", "Summarize cached spending", []string{"--group merchant|category|account|month", "--since", "--from", "--to"}),
-		"merchant.top":       schemaEntry("merchant.top", "Show top cached merchants", []string{"--since", "--from", "--to"}),
+		"spend.summary":      schemaEntry("spend.summary", "Summarize cached spending", []string{"--group merchant|category|account|month", "--since", "--from", "--to", "--limit"}),
+		"merchant.top":       schemaEntry("merchant.top", "Show top cached merchants", []string{"--since", "--from", "--to", "--limit"}),
 		"cashflow.summary":   schemaEntry("cashflow.summary", "Show monthly cached inflow/outflow/net", []string{"--since", "--from", "--to"}),
 		"cache.status":       schemaEntry("cache.status", "Inspect local cache", []string{"--config"}),
 	}
@@ -333,6 +471,9 @@ func schemaEntry(name, description string, flags []string) map[string]any {
 }
 
 func sideEffect(name string) string {
+	if name == "whoami" {
+		return "read_local"
+	}
 	if strings.HasPrefix(name, "sync.") {
 		return "read_live_write_local_cache"
 	}
@@ -344,21 +485,21 @@ func sideEffect(name string) string {
 
 func (a App) account(args []string) error {
 	if len(args) == 0 || args[0] != "list" {
-		return fmt.Errorf("usage: lasso account list [--format json]")
+		return usageErrorf("usage: lasso account list [--format json]")
 	}
 	return a.accounts(args[1:])
 }
 
 func (a App) balance(args []string) error {
 	if len(args) == 0 || args[0] != "list" {
-		return fmt.Errorf("usage: lasso balance list [--format json]")
+		return usageErrorf("usage: lasso balance list [--format json]")
 	}
 	return a.balances(args[1:])
 }
 
 func (a App) transaction(args []string) error {
 	if len(args) == 0 {
-		return fmt.Errorf("usage: lasso transaction list|search|export")
+		return usageErrorf("usage: lasso transaction list|search|export")
 	}
 	switch args[0] {
 	case "list":
@@ -368,7 +509,7 @@ func (a App) transaction(args []string) error {
 	case "export":
 		return a.export(append([]string{"tx"}, args[1:]...))
 	default:
-		return fmt.Errorf("usage: lasso transaction list|search|export")
+		return usageErrorf("usage: lasso transaction list|search|export")
 	}
 }
 
@@ -391,7 +532,7 @@ func (a App) spendCommand(args []string) error {
 
 func (a App) merchant(args []string) error {
 	if len(args) == 0 || args[0] != "top" {
-		return fmt.Errorf("usage: lasso merchant top [--format json]")
+		return usageErrorf("usage: lasso merchant top [--format json]")
 	}
 	return a.merchants(args)
 }
@@ -408,7 +549,7 @@ func (a App) init(args []string) error {
 	fs.SetOutput(a.Err)
 	configPath := fs.String("config", "", "config file path; defaults to ~/.lasso/config.env")
 	force := fs.Bool("force", false, "overwrite an existing config file")
-	if err := fs.Parse(args); err != nil {
+	if err := parseFlags(fs, args); err != nil {
 		return err
 	}
 	paths, err := config.ResolvePaths(*configPath)
@@ -416,7 +557,7 @@ func (a App) init(args []string) error {
 		return err
 	}
 	if _, err := os.Stat(paths.ConfigFile); err == nil && !*force {
-		return fmt.Errorf("config already exists at %s; pass --force to overwrite", paths.ConfigFile)
+		return conflictErrorf("config already exists at %s; pass --force to overwrite", paths.ConfigFile)
 	} else if err != nil && !os.IsNotExist(err) {
 		return err
 	}
@@ -451,7 +592,7 @@ func (a App) doctor(args []string) error {
 	fs := flag.NewFlagSet("doctor", flag.ContinueOnError)
 	fs.SetOutput(a.Err)
 	configPath := fs.String("config", "", "config file path; defaults to ~/.lasso/config.env")
-	if err := fs.Parse(args); err != nil {
+	if err := parseFlags(fs, args); err != nil {
 		return err
 	}
 
@@ -460,7 +601,7 @@ func (a App) doctor(args []string) error {
 		return err
 	}
 
-	cfg, cfgErr := config.LoadOptionalEnvFile(paths.ConfigFile)
+	cfg, cfgErr := config.LoadEnvFile(paths.ConfigFile)
 	enrollmentPath := config.ResolveEnrollmentPath(paths, cfg)
 
 	fmt.Fprintln(a.Out, "lasso doctor")
@@ -498,14 +639,14 @@ func (a App) doctor(args []string) error {
 	if _, err := os.Stat(enrollmentPath); err != nil {
 		ok = false
 		fmt.Fprintf(a.Out, "[missing] enrollment file: %v\n", err)
-		fmt.Fprintln(a.Out, "         run `lasso connect` once implemented")
+		fmt.Fprintln(a.Out, "         run `lasso connect`")
 	} else {
 		fmt.Fprintln(a.Out, "[ok] enrollment file exists")
 		checkFileMode(a.Out, enrollmentPath)
 	}
 
 	if !ok {
-		return fmt.Errorf("doctor found missing required setup")
+		return codedError{code: "config_error", exitCode: 4, fix: "follow the doctor output above, then re-run `lasso doctor`", err: fmt.Errorf("doctor found missing required setup")}
 	}
 	fmt.Fprintln(a.Out, "ready")
 	return nil
@@ -518,7 +659,7 @@ func (a App) connect(args []string) error {
 	port := fs.Int("port", 0, "local port; default tries 8765 then a random port")
 	timeout := fs.Duration("timeout", 5*time.Minute, "how long to wait for Teller Connect")
 	noOpen := fs.Bool("no-open", false, "print URL instead of opening browser")
-	if err := fs.Parse(args); err != nil {
+	if err := parseFlags(fs, args); err != nil {
 		return err
 	}
 
@@ -528,11 +669,11 @@ func (a App) connect(args []string) error {
 	}
 	cfg, err := config.LoadEnvFile(paths.ConfigFile)
 	if err != nil {
-		return fmt.Errorf("load config %s: %w", paths.ConfigFile, err)
+		return configErrorf("run `lasso init` to create a config", "load config %s: %v", paths.ConfigFile, err)
 	}
 	enrollmentPath := config.ResolveEnrollmentPath(paths, cfg)
 	if cfg.Get("TELLER_APPLICATION_ID") == "" {
-		return fmt.Errorf("TELLER_APPLICATION_ID is required; edit %s", paths.ConfigFile)
+		return configErrorf("set TELLER_APPLICATION_ID in the config file", "TELLER_APPLICATION_ID is required; edit %s", paths.ConfigFile)
 	}
 	enrollment, err := connect.Run(context.Background(), connect.Options{
 		ApplicationID:  cfg.Get("TELLER_APPLICATION_ID"),
@@ -557,7 +698,7 @@ func (a App) whoami(args []string) error {
 	fs := flag.NewFlagSet("whoami", flag.ContinueOnError)
 	fs.SetOutput(a.Err)
 	configPath := fs.String("config", "", "config file path")
-	if err := fs.Parse(args); err != nil {
+	if err := parseFlags(fs, args); err != nil {
 		return err
 	}
 	state, err := loadState(*configPath, false)
@@ -572,6 +713,9 @@ func (a App) whoami(args []string) error {
 		"access_token":     teller.MaskToken(state.Enrollment.AccessToken),
 		"path":             state.EnrollmentPath,
 	}
+	if a.envelopeJSON() {
+		return a.writeEnvelope("whoami", out, map[string]any{"source": "local"}, nil, []nextAction{{Command: "lasso account list --format json", Description: "List live Teller accounts"}})
+	}
 	enc := json.NewEncoder(a.Out)
 	enc.SetIndent("", "  ")
 	return enc.Encode(out)
@@ -582,7 +726,7 @@ func (a App) accounts(args []string) error {
 	fs.SetOutput(a.Err)
 	configPath := fs.String("config", "", "config file path")
 	jsonOut := fs.Bool("json", false, "emit JSON")
-	if err := fs.Parse(args); err != nil {
+	if err := parseFlags(fs, args); err != nil {
 		return err
 	}
 	state, err := loadState(*configPath, true)
@@ -625,7 +769,7 @@ func (a App) transactions(args []string) error {
 	maxAmount := fs.String("max", "", "maximum amount")
 	category := fs.String("category", "", "category substring")
 	merchant := fs.String("merchant", "", "merchant/counterparty substring")
-	if err := fs.Parse(args); err != nil {
+	if err := parseFlags(fs, args); err != nil {
 		return err
 	}
 	startDate, endDate, err := dateWindow(*from, *to, *since)
@@ -643,7 +787,7 @@ func (a App) transactions(args []string) error {
 		if err := validateAmountFilter(*maxAmount, "--max"); err != nil {
 			return err
 		}
-		return a.cachedTransactions(*configPath, *accountSelector, store.TxFilter{From: startDate, To: endDate, Status: status, MinAmount: *minAmount, MaxAmount: *maxAmount, Category: *category, Merchant: *merchant, Limit: *limit}, *jsonOut)
+		return a.cachedTransactions("transaction.list", *configPath, *accountSelector, store.TxFilter{From: startDate, To: endDate, Status: status, MinAmount: *minAmount, MaxAmount: *maxAmount, Category: *category, Merchant: *merchant, Limit: *limit}, *jsonOut)
 	}
 	state, err := loadState(*configPath, true)
 	if err != nil {
@@ -661,28 +805,30 @@ func (a App) transactions(args []string) error {
 	if err != nil {
 		return explainTellerError(err)
 	}
+	fetched := len(txs)
+	truncated := false
+	if *limit > 0 && len(txs) > *limit {
+		txs = txs[:*limit]
+		truncated = true
+	}
 	if a.envelopeJSON() {
-		return a.writeRows("transaction.list", txs, len(txs), "live", []nextAction{{Command: "lasso sync run --format json", Description: "Cache transactions locally for repeat analysis"}})
+		return a.writeEnvelope("transaction.list", txs, map[string]any{"count": len(txs), "source": "live", "truncated": truncated}, nil, []nextAction{{Command: "lasso sync run --format json", Description: "Cache transactions locally for repeat analysis"}})
 	}
 	if *jsonOut {
 		enc := json.NewEncoder(a.Out)
 		enc.SetIndent("", "  ")
 		return enc.Encode(txs)
 	}
-	max := *limit
-	if max <= 0 || max > len(txs) {
-		max = len(txs)
-	}
-	fmt.Fprintf(a.Out, "%s → %s  %s  %d transactions\n", startDate, endDate, account.Name, len(txs))
-	for _, tx := range txs[:max] {
+	fmt.Fprintf(a.Out, "%s → %s  %s  %d transactions\n", startDate, endDate, account.Name, fetched)
+	for _, tx := range txs {
 		name := tx.Description
 		if detailsName := counterpartyName(tx.Details); detailsName != "" {
 			name = detailsName
 		}
 		fmt.Fprintf(a.Out, "%s\t%10s\t%-8s\t%s\n", tx.Date, tx.Amount, tx.Status, name)
 	}
-	if max < len(txs) {
-		fmt.Fprintf(a.Out, "… %d more; use --limit or --json\n", len(txs)-max)
+	if truncated {
+		fmt.Fprintf(a.Out, "… %d more; use --limit or --json\n", fetched-len(txs))
 	}
 	return nil
 }
@@ -692,7 +838,7 @@ func (a App) balances(args []string) error {
 	fs.SetOutput(a.Err)
 	configPath := fs.String("config", "", "config file path")
 	jsonOut := fs.Bool("json", false, "emit JSON")
-	if err := fs.Parse(args); err != nil {
+	if err := parseFlags(fs, args); err != nil {
 		return err
 	}
 	state, err := loadState(*configPath, true)
@@ -741,7 +887,7 @@ func (a App) sync(args []string) error {
 	from := fs.String("from", "", "start date YYYY-MM-DD")
 	to := fs.String("to", "", "end date YYYY-MM-DD; defaults to today")
 	since := fs.String("since", "", "relative window: 7d, 30d, 90d, month, ytd; default incremental with 10d overlap")
-	if err := fs.Parse(args); err != nil {
+	if err := parseFlags(fs, args); err != nil {
 		return err
 	}
 	incremental := *from == "" && *since == ""
@@ -777,6 +923,12 @@ func (a App) sync(args []string) error {
 		selected = accounts
 	}
 	total := 0
+	warnings := []string{}
+	warn := func(format string, args ...any) {
+		message := fmt.Sprintf(format, args...)
+		warnings = append(warnings, message)
+		fmt.Fprintln(a.Err, "warning: "+message)
+	}
 	syncRows := make([]map[string]any, 0, len(selected))
 	for _, account := range selected {
 		accountStart := startDate
@@ -786,10 +938,15 @@ func (a App) sync(args []string) error {
 				return err
 			}
 		}
-		runID, _ := db.StartSyncRun(account.ID, accountStart, endDate)
+		runID, runErr := db.StartSyncRun(account.ID, accountStart, endDate)
+		if runErr != nil {
+			warn("could not record sync run for %s: %v", account.Name, runErr)
+		}
 		balance, berr := state.Client.GetBalance(state.Enrollment, account.ID)
-		if berr == nil {
-			_ = db.UpsertBalance(account, balance)
+		if berr != nil {
+			warn("balance fetch failed for %s: %v", account.Name, berr)
+		} else if uerr := db.UpsertBalance(account, balance); uerr != nil {
+			warn("balance cache write failed for %s: %v", account.Name, uerr)
 		}
 		txs, err := state.Client.ListTransactions(state.Enrollment, account.ID, accountStart, endDate, 500)
 		if err != nil {
@@ -808,14 +965,14 @@ func (a App) sync(args []string) error {
 		}
 	}
 	if a.envelopeJSON() {
-		return a.writeEnvelope("sync.run", syncRows, map[string]any{"accounts": len(syncRows), "transactions_synced": total, "cache_path": dbPath(state)}, []nextAction{{Command: "lasso cache status --format json", Description: "Inspect cache counts and last sync"}, {Command: "lasso transaction list --since 30d --format json", Description: "Query cached transactions"}})
+		return a.writeEnvelope("sync.run", syncRows, map[string]any{"accounts": len(syncRows), "transactions_synced": total, "cache_path": dbPath(state)}, warnings, []nextAction{{Command: "lasso cache status --format json", Description: "Inspect cache counts and last sync"}, {Command: "lasso transaction list --since 30d --format json", Description: "Query cached transactions"}})
 	}
 	fmt.Fprintf(a.Out, "cache: %s\n", dbPath(state))
 	fmt.Fprintf(a.Out, "total transactions synced: %d\n", total)
 	return nil
 }
 
-func (a App) cachedTransactions(configPath, accountSelector string, filter store.TxFilter, jsonOut bool) error {
+func (a App) cachedTransactions(command, configPath, accountSelector string, filter store.TxFilter, jsonOut bool) error {
 	state, err := loadState(configPath, false)
 	if err != nil {
 		return err
@@ -841,7 +998,7 @@ func (a App) cachedTransactions(configPath, accountSelector string, filter store
 		return err
 	}
 	if a.envelopeJSON() {
-		return a.writeRows("transaction.list", rows, len(rows), "cache", []nextAction{{Command: "lasso spend summary --since month --format json", Description: "Summarize cached spend"}})
+		return a.writeRows(command, rows, len(rows), "cache", []nextAction{{Command: "lasso spend summary --since month --format json", Description: "Summarize cached spend"}})
 	}
 	if jsonOut {
 		enc := json.NewEncoder(a.Out)
@@ -872,11 +1029,12 @@ func (a App) search(args []string) error {
 	maxAmount := fs.String("max", "", "maximum amount")
 	category := fs.String("category", "", "category substring")
 	merchant := fs.String("merchant", "", "merchant/counterparty substring")
-	if err := fs.Parse(args); err != nil {
+	positionals, err := parseWithPositionals(fs, args)
+	if err != nil {
 		return err
 	}
-	if fs.NArg() < 1 {
-		return fmt.Errorf("usage: lasso search <query> [--since 90d]")
+	if len(positionals) < 1 {
+		return usageErrorf("usage: lasso search <query> [--since 90d]")
 	}
 	startDate, endDate, err := dateWindow(*from, *to, *since)
 	if err != nil {
@@ -892,7 +1050,7 @@ func (a App) search(args []string) error {
 	if err := validateAmountFilter(*maxAmount, "--max"); err != nil {
 		return err
 	}
-	return a.cachedTransactions(*configPath, "", store.TxFilter{From: startDate, To: endDate, Query: strings.Join(fs.Args(), " "), Status: status, MinAmount: *minAmount, MaxAmount: *maxAmount, Category: *category, Merchant: *merchant, Limit: *limit}, *jsonOut)
+	return a.cachedTransactions("transaction.search", *configPath, "", store.TxFilter{From: startDate, To: endDate, Query: strings.Join(positionals, " "), Status: status, MinAmount: *minAmount, MaxAmount: *maxAmount, Category: *category, Merchant: *merchant, Limit: *limit}, *jsonOut)
 }
 
 func (a App) spend(args []string) error {
@@ -904,7 +1062,8 @@ func (a App) spend(args []string) error {
 	from := fs.String("from", "", "start date YYYY-MM-DD")
 	to := fs.String("to", "", "end date YYYY-MM-DD; defaults to today")
 	since := fs.String("since", "month", "relative window")
-	if err := fs.Parse(args); err != nil {
+	limit := fs.Int("limit", 50, "max groups to return")
+	if err := parseFlags(fs, args); err != nil {
 		return err
 	}
 	startDate, endDate, err := dateWindow(*from, *to, *since)
@@ -920,7 +1079,7 @@ func (a App) spend(args []string) error {
 		return err
 	}
 	defer db.Close()
-	rows, err := db.Spend(*group, startDate, endDate)
+	rows, err := db.Spend(*group, startDate, endDate, *limit)
 	if err != nil {
 		return err
 	}
@@ -941,7 +1100,7 @@ func (a App) spend(args []string) error {
 
 func (a App) merchants(args []string) error {
 	if len(args) > 0 && args[0] != "top" {
-		return fmt.Errorf("usage: lasso merchants top [--since 90d]")
+		return usageErrorf("usage: lasso merchants top [--since 90d]")
 	}
 	fs := flag.NewFlagSet("merchants top", flag.ContinueOnError)
 	fs.SetOutput(a.Err)
@@ -950,10 +1109,11 @@ func (a App) merchants(args []string) error {
 	from := fs.String("from", "", "start date YYYY-MM-DD")
 	to := fs.String("to", "", "end date YYYY-MM-DD; defaults to today")
 	since := fs.String("since", "90d", "relative window")
+	limit := fs.Int("limit", 50, "max merchants to return")
 	if len(args) > 0 && args[0] == "top" {
 		args = args[1:]
 	}
-	if err := fs.Parse(args); err != nil {
+	if err := parseFlags(fs, args); err != nil {
 		return err
 	}
 	startDate, endDate, err := dateWindow(*from, *to, *since)
@@ -969,7 +1129,7 @@ func (a App) merchants(args []string) error {
 		return err
 	}
 	defer db.Close()
-	rows, err := db.Spend("merchant", startDate, endDate)
+	rows, err := db.Spend("merchant", startDate, endDate, *limit)
 	if err != nil {
 		return err
 	}
@@ -996,7 +1156,7 @@ func (a App) cashflow(args []string) error {
 	from := fs.String("from", "", "start date YYYY-MM-DD")
 	to := fs.String("to", "", "end date YYYY-MM-DD; defaults to today")
 	since := fs.String("since", "6mo", "relative window: 30d, 90d, 6mo, 1y, ytd")
-	if err := fs.Parse(args); err != nil {
+	if err := parseFlags(fs, args); err != nil {
 		return err
 	}
 	startDate, endDate, err := dateWindow(*from, *to, *since)
@@ -1033,7 +1193,7 @@ func (a App) cashflow(args []string) error {
 
 func (a App) export(args []string) error {
 	if len(args) == 0 || args[0] != "tx" {
-		return fmt.Errorf("usage: lasso export tx [--format csv|json|jsonl] [--out path]")
+		return usageErrorf("usage: lasso export tx [--format csv|json|jsonl] [--out path]")
 	}
 	fs := flag.NewFlagSet("export tx", flag.ContinueOnError)
 	fs.SetOutput(a.Err)
@@ -1049,7 +1209,7 @@ func (a App) export(args []string) error {
 	maxAmount := fs.String("max", "", "maximum amount")
 	category := fs.String("category", "", "category substring")
 	merchant := fs.String("merchant", "", "merchant/counterparty substring")
-	if err := fs.Parse(args[1:]); err != nil {
+	if err := parseFlags(fs, args[1:]); err != nil {
 		return err
 	}
 	startDate, endDate, err := dateWindow(*from, *to, *since)
@@ -1110,7 +1270,7 @@ func (a App) export(args []string) error {
 		cw.Flush()
 		err = cw.Error()
 	default:
-		err = fmt.Errorf("unsupported --format %q", *format)
+		err = usageErrorf("unsupported --format %q; use csv, json, or jsonl", *format)
 	}
 	if err != nil {
 		return err
@@ -1123,12 +1283,12 @@ func (a App) export(args []string) error {
 
 func (a App) cache(args []string) error {
 	if len(args) == 0 || args[0] != "status" {
-		return fmt.Errorf("usage: lasso cache status")
+		return usageErrorf("usage: lasso cache status")
 	}
 	fs := flag.NewFlagSet("cache status", flag.ContinueOnError)
 	fs.SetOutput(a.Err)
 	configPath := fs.String("config", "", "config file path")
-	if err := fs.Parse(args[1:]); err != nil {
+	if err := parseFlags(fs, args[1:]); err != nil {
 		return err
 	}
 	state, err := loadState(*configPath, false)
@@ -1145,7 +1305,7 @@ func (a App) cache(args []string) error {
 		return err
 	}
 	if a.envelopeJSON() {
-		return a.writeEnvelope("cache.status", summary, map[string]any{"cache_path": dbPath(state)}, []nextAction{{Command: "lasso sync run --format json", Description: "Refresh the cache"}})
+		return a.writeEnvelope("cache.status", summary, map[string]any{"cache_path": dbPath(state)}, nil, []nextAction{{Command: "lasso sync run --format json", Description: "Refresh the cache"}})
 	}
 	fmt.Fprintf(a.Out, "cache: %s\n", dbPath(state))
 	for _, key := range []string{"accounts", "balances", "transactions", "sync_runs"} {
@@ -1182,7 +1342,7 @@ func cachedAccounts(db *store.Store) ([]teller.Account, error) {
 		return nil, err
 	}
 	if len(accounts) == 0 {
-		return nil, fmt.Errorf("no cached accounts; run `lasso sync` first")
+		return nil, notFoundErrorf("no cached accounts; run `lasso sync` first")
 	}
 	return accounts, nil
 }
@@ -1194,12 +1354,12 @@ func loadState(configPath string, withClient bool) (runtimeState, error) {
 	}
 	cfg, err := config.LoadEnvFile(paths.ConfigFile)
 	if err != nil {
-		return runtimeState{}, fmt.Errorf("load config %s: %w", paths.ConfigFile, err)
+		return runtimeState{}, configErrorf("run `lasso init` to create a config", "load config %s: %v", paths.ConfigFile, err)
 	}
 	enrollmentPath := config.ResolveEnrollmentPath(paths, cfg)
 	enrollment, err := teller.LoadEnrollment(enrollmentPath)
 	if err != nil {
-		return runtimeState{}, fmt.Errorf("load enrollment %s: %w", enrollmentPath, err)
+		return runtimeState{}, configErrorf("run `lasso connect` to enroll an institution", "load enrollment %s: %v", enrollmentPath, err)
 	}
 	state := runtimeState{Paths: paths, Env: cfg, EnrollmentPath: enrollmentPath, Enrollment: enrollment}
 	if withClient {
@@ -1271,10 +1431,10 @@ func counterpartyName(details map[string]any) string {
 
 func statusFilter(pending, posted, all bool) (string, error) {
 	if all && (pending || posted) {
-		return "", fmt.Errorf("--all cannot be combined with --pending or --posted")
+		return "", usageErrorf("--all cannot be combined with --pending or --posted")
 	}
 	if pending && posted {
-		return "", fmt.Errorf("choose only one of --pending or --posted")
+		return "", usageErrorf("choose only one of --pending or --posted")
 	}
 	if pending {
 		return "pending", nil
@@ -1290,7 +1450,7 @@ func validateStatusValue(status string) error {
 	case "", "pending", "posted":
 		return nil
 	default:
-		return fmt.Errorf("unsupported status %q; use pending or posted", status)
+		return usageErrorf("unsupported status %q; use pending or posted", status)
 	}
 }
 
@@ -1299,7 +1459,7 @@ func validateAmountFilter(value, label string) error {
 		return nil
 	}
 	if _, err := strconv.ParseFloat(value, 64); err != nil {
-		return fmt.Errorf("invalid %s amount %q", label, value)
+		return usageErrorf("invalid %s amount %q", label, value)
 	}
 	return nil
 }
@@ -1308,13 +1468,13 @@ func dateWindow(from, to, since string) (string, string, error) {
 	end := time.Now().Format(time.DateOnly)
 	if to != "" {
 		if _, err := time.Parse(time.DateOnly, to); err != nil {
-			return "", "", fmt.Errorf("invalid --to date: %w", err)
+			return "", "", usageErrorf("invalid --to date: %v", err)
 		}
 		end = to
 	}
 	if from != "" {
 		if _, err := time.Parse(time.DateOnly, from); err != nil {
-			return "", "", fmt.Errorf("invalid --from date: %w", err)
+			return "", "", usageErrorf("invalid --from date: %v", err)
 		}
 		return from, end, nil
 	}
@@ -1335,36 +1495,36 @@ func dateWindow(from, to, since string) (string, string, error) {
 	if strings.HasSuffix(since, "mo") {
 		months, err := strconv.Atoi(strings.TrimSuffix(since, "mo"))
 		if err != nil || months < 0 {
-			return "", "", fmt.Errorf("invalid --since %q", since)
+			return "", "", usageErrorf("invalid --since %q", since)
 		}
 		return now.AddDate(0, -months, 0).Format(time.DateOnly), end, nil
 	}
 	if strings.HasSuffix(since, "y") {
 		years, err := strconv.Atoi(strings.TrimSuffix(since, "y"))
 		if err != nil || years < 0 {
-			return "", "", fmt.Errorf("invalid --since %q", since)
+			return "", "", usageErrorf("invalid --since %q", since)
 		}
 		return now.AddDate(-years, 0, 0).Format(time.DateOnly), end, nil
 	}
 	if strings.HasSuffix(since, "d") {
 		days, err := strconv.Atoi(strings.TrimSuffix(since, "d"))
 		if err != nil || days < 0 {
-			return "", "", fmt.Errorf("invalid --since %q", since)
+			return "", "", usageErrorf("invalid --since %q", since)
 		}
 		return now.AddDate(0, 0, -days).Format(time.DateOnly), end, nil
 	}
-	return "", "", fmt.Errorf("unsupported --since %q; use 7d, 30d, 90d, month, last-month, 6mo, 1y, year, or ytd", since)
+	return "", "", usageErrorf("unsupported --since %q; use 7d, 30d, 90d, month, last-month, 6mo, 1y, year, or ytd", since)
 }
 
 func selectAccount(accounts []teller.Account, selector string) (teller.Account, error) {
 	if len(accounts) == 0 {
-		return teller.Account{}, fmt.Errorf("no accounts found")
+		return teller.Account{}, notFoundErrorf("no accounts found")
 	}
 	if selector == "" {
 		if len(accounts) == 1 {
 			return accounts[0], nil
 		}
-		return teller.Account{}, fmt.Errorf("multiple accounts found; pass --account with id, last four, or name substring")
+		return teller.Account{}, usageErrorf("multiple accounts found; pass --account with id, last four, or name substring")
 	}
 	selector = strings.ToLower(selector)
 	var matches []teller.Account
@@ -1374,10 +1534,10 @@ func selectAccount(accounts []teller.Account, selector string) (teller.Account, 
 		}
 	}
 	if len(matches) == 0 {
-		return teller.Account{}, fmt.Errorf("no account matches %q", selector)
+		return teller.Account{}, notFoundErrorf("no account matches %q", selector)
 	}
 	if len(matches) > 1 {
-		return teller.Account{}, fmt.Errorf("multiple accounts match %q; use full account id", selector)
+		return teller.Account{}, usageErrorf("multiple accounts match %q; use full account id", selector)
 	}
 	return matches[0], nil
 }
@@ -1387,20 +1547,28 @@ func explainTellerError(err error) error {
 	if errors.As(err, &tellerErr) {
 		switch tellerErr.StatusCode {
 		case 400:
-			return fmt.Errorf("%w\ncheck Teller mTLS certificate configuration", err)
+			return codedError{code: "config_error", exitCode: 4, fix: "check Teller mTLS certificate configuration", err: err}
 		case 401, 403:
-			return fmt.Errorf("%w\naccess token is missing, invalid, revoked, or paired with the wrong cert; reconnect", err)
+			return codedError{code: "auth_error", exitCode: 4, fix: "run `lasso connect` to re-enroll; the access token is missing, invalid, revoked, or paired with the wrong cert", err: err}
 		case 404:
 			if strings.HasPrefix(tellerErr.Code, "enrollment.disconnected") {
-				return fmt.Errorf("%w\nenrollment needs user action; reconnect or log in to the institution", err)
+				return codedError{code: "enrollment_disconnected", exitCode: 4, fix: "enrollment needs user action; reconnect or log in to the institution", err: err}
 			}
+			return codedError{code: "not_found", exitCode: 3, err: err}
 		case 410:
-			return fmt.Errorf("%w\naccount appears closed or no longer accessible", err)
+			return codedError{code: "gone", exitCode: 3, fix: "account appears closed or no longer accessible", err: err}
+		case 422:
+			return codedError{code: "usage_error", exitCode: 2, err: err}
 		case 429:
-			return fmt.Errorf("%w\nrate limited; retry later", err)
-		case 502:
-			return fmt.Errorf("%w\ninstitution unavailable; retry later", err)
+			return codedError{code: "rate_limited", exitCode: 7, retryable: true, fix: "rate limited; retry later", err: err}
+		case 502, 504:
+			return codedError{code: "upstream_unavailable", exitCode: 6, retryable: true, fix: "institution unavailable; retry later", err: err}
 		}
+		return err
+	}
+	var urlErr *url.Error
+	if errors.As(err, &urlErr) {
+		return codedError{code: "network_error", exitCode: 7, retryable: true, fix: "check connectivity and retry", err: err}
 	}
 	return err
 }
