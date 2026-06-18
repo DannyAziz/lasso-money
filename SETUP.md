@@ -1,20 +1,41 @@
 # Lasso Money setup
 
-This is the setup playbook for **lasso**, a local-first read-only Teller
-finance CLI. It is written so an AI agent can drive the whole setup on a
-human's behalf — over chat, SSH, or locally — but it works for humans too.
+Setup has two parts: **prerequisites you do on your laptop** (a browser and
+a Teller account — can't be delegated), then **wiring lasso up**, which a
+human or an AI agent can do.
 
-**Human in a hurry:**
+## Part 1 — prerequisites (you, on your laptop, ~5 min)
+
+These need a browser and only you can do them. If an agent is helping, it
+will ask you for the values you collect here.
+
+1. Sign up at https://teller.io and open https://dashboard.teller.io.
+2. Create an application. Copy its **application ID** (`app_...`).
+3. Pick an **environment**:
+   - `sandbox` — fake data, no certificates. Best for trying it out.
+   - `development` / `production` — real bank data. The dashboard gives you
+     an **mTLS certificate + private key** to download; save both files on
+     the machine where lasso will run.
+
+That's the whole human-on-a-browser part. Everything below is just running
+the CLI with those values.
+
+## Part 2 — wire it up
+
+If lasso runs on the same laptop, the fastest path is:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/DannyAziz/lasso-money/main/install.sh | sh
-lasso init      # then edit ~/.lasso/config.env
+lasso init      # then edit ~/.lasso/config.env with your app ID (+ cert paths)
 lasso doctor    # follow its output until it prints "ready"
 lasso connect   # link a bank in the browser
 lasso sync      # cache transactions locally
 ```
 
-The rest of this document is the agent protocol.
+The rest of this document is the **agent protocol** — how an AI agent sets
+lasso up for you (e.g. on a server, over chat) using the Part 1 values you
+provide. The one step an agent can't do alone is linking your bank, which
+happens in a browser; the agent relays a URL for you to open (step 3).
 
 ## How setup works
 
@@ -31,17 +52,15 @@ return `ok: false` with `error.code`, `error.retryable`, and `error.fix`,
 plus a semantic exit code. Discover the full command surface with
 `lasso --llms` and `lasso schema`.
 
-## What you will need from the human
+## What the agent needs from the human
 
-Ask for these up front (or when the corresponding doctor check fails):
+These all come from Part 1. Ask for them up front (or when the matching
+doctor check fails):
 
-1. **Teller application ID** (`app_...`) — from https://dashboard.teller.io
-   after creating a free Teller account.
-2. **Environment** — `sandbox` (fake data, no certs, good for trying it
-   out), or `development` / `production` (real bank data; requires the
-   mTLS certificate + key downloaded from the Teller dashboard).
-3. If not sandbox: **paths to the mTLS cert and key files** on this
-   machine. Never read or print the contents of these files.
+1. **Teller application ID** (`app_...`).
+2. **Environment** — `sandbox`, `development`, or `production`.
+3. If not sandbox: **paths to the mTLS cert and key files** the human
+   downloaded. Never read or print the contents of these files.
 
 ## Step 0 — install
 
