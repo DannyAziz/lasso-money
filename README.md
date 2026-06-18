@@ -188,4 +188,4 @@ go build -o ./bin/lasso ./cmd/lasso
 
 ## License
 
-No license has been added yet.
+MIT — see [LICENSE](LICENSE).
