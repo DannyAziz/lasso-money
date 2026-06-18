@@ -223,6 +223,67 @@ func TestErrorsEmitEnvelopeAndExitCodes(t *testing.T) {
 	}
 }
 
+func TestDoctorJSONNotReady(t *testing.T) {
+	clearEnvOverrides(t)
+	missing := filepath.Join(t.TempDir(), "missing.env")
+
+	out, _, code := runCLI(t, "--format", "json", "doctor", "--config", missing)
+	if code != 4 {
+		t.Fatalf("exit = %d, want 4", code)
+	}
+	var env struct {
+		OK    bool             `json:"ok"`
+		Data  []doctorCheck    `json:"data"`
+		Meta  map[string]any   `json:"meta"`
+		Error *structuredError `json:"error"`
+	}
+	dec := json.NewDecoder(strings.NewReader(out))
+	if err := dec.Decode(&env); err != nil {
+		t.Fatalf("unmarshal: %v\n%s", err, out)
+	}
+	// Doctor reports its own envelope; Main must not append a second one.
+	if dec.More() {
+		t.Fatalf("expected exactly one JSON document on stdout:\n%s", out)
+	}
+	if env.OK || env.Error == nil || env.Error.Code != "not_ready" {
+		t.Fatalf("envelope = %s", out)
+	}
+	if ready, _ := env.Meta["ready"].(bool); ready {
+		t.Fatalf("meta.ready = true, want false")
+	}
+	if len(env.Data) == 0 || env.Data[0].Name != "config_file" || env.Data[0].Status != "missing" {
+		t.Fatalf("checks = %#v", env.Data)
+	}
+}
+
+func TestDoctorJSONReady(t *testing.T) {
+	configPath, _ := testSetup(t)
+
+	out, errOut, code := runCLI(t, "--format", "json", "doctor", "--config", configPath)
+	if code != 0 {
+		t.Fatalf("exit = %d, stderr = %q\n%s", code, errOut, out)
+	}
+	var env struct {
+		OK   bool           `json:"ok"`
+		Data []doctorCheck  `json:"data"`
+		Meta map[string]any `json:"meta"`
+	}
+	if err := json.Unmarshal([]byte(out), &env); err != nil {
+		t.Fatalf("unmarshal: %v\n%s", err, out)
+	}
+	if !env.OK {
+		t.Fatalf("envelope = %s", out)
+	}
+	if ready, _ := env.Meta["ready"].(bool); !ready {
+		t.Fatalf("meta.ready = false:\n%s", out)
+	}
+	for _, c := range env.Data {
+		if c.Status == "missing" {
+			t.Fatalf("unexpected missing check %q", c.Name)
+		}
+	}
+}
+
 func TestDateWindow(t *testing.T) {
 	today := time.Now().Format(time.DateOnly)
 	cases := []struct {

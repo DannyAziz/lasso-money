@@ -26,6 +26,9 @@ type Options struct {
 	OpenBrowser    bool
 	EnrollmentPath string
 	Status         func(string)
+	// OnURL receives the local Connect URL as soon as the server is
+	// listening, so callers (e.g. agents) can relay it to a human.
+	OnURL func(string)
 }
 
 const pageTemplate = `<!DOCTYPE html>
@@ -116,6 +119,9 @@ func Run(ctx context.Context, opts Options) (teller.Enrollment, error) {
 	}()
 
 	url := "http://" + listener.Addr().String() + "/"
+	if opts.OnURL != nil {
+		opts.OnURL(url)
+	}
 	status("Open " + url + " in your browser to link a bank.")
 	status("Environment: " + opts.Environment + ". Sandbox creds: username / password.")
 	if opts.OpenBrowser {
