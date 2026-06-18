@@ -1,0 +1,103 @@
+- generic [ref=e2]:
+  - banner [ref=e3]:
+    - generic [ref=e4]:
+      - link [ref=e5] [cursor=pointer]:
+        - /url: /dashboard
+        - img [ref=e6]
+      - generic [ref=e7]:
+        - generic [ref=e8]:
+          - link "API Documentation" [ref=e10] [cursor=pointer]:
+            - /url: /docs
+          - text: "|"
+        - generic [ref=e11] [cursor=pointer]:
+          - generic [ref=e12]: Danny Aziz
+          - img [ref=e13]
+    - generic:
+      - list:
+        - listitem:
+          - link "User Settings":
+            - /url: /settings/user
+            - img
+            - generic: User Settings
+        - listitem:
+          - link "Sign out":
+            - /url: /session
+            - img
+            - generic: Sign out
+  - main [ref=e14]:
+    - generic [ref=e15]:
+      - generic [ref=e17] [cursor=pointer]:
+        - generic [ref=e18]:
+          - generic [ref=e19]: indie dev
+          - generic [ref=e20]: Admin
+        - img [ref=e22]
+      - navigation [ref=e23]:
+        - list [ref=e24]:
+          - listitem [ref=e25]:
+            - link "Team" [ref=e26] [cursor=pointer]:
+              - /url: /settings/team
+              - img [ref=e27]
+              - text: Team
+          - listitem [ref=e28]:
+            - link "Application" [ref=e29] [cursor=pointer]:
+              - /url: /settings/application
+              - img [ref=e30]
+              - text: Application
+          - listitem [ref=e31]:
+            - link "Certificates" [ref=e32] [cursor=pointer]:
+              - /url: /settings/certificates
+              - img [ref=e33]
+              - text: Certificates
+          - listitem [ref=e34]:
+            - link "Billing" [ref=e35] [cursor=pointer]:
+              - /url: /dashboard/billing
+              - img [ref=e36]
+              - text: Billing
+          - listitem [ref=e37]:
+            - link "Activity Beta" [ref=e38] [cursor=pointer]:
+              - /url: /dashboard/activity
+              - img [ref=e39]
+              - generic [ref=e40]:
+                - text: Activity
+                - generic [ref=e41]: Beta
+    - generic [ref=e43]:
+      - heading "Your Application" [level=1] [ref=e44]
+      - generic [ref=e45]:
+        - text: Your application id is
+        - code [ref=e46]: app_p03e7op5ddtfo9kmcu000
+        - text: . Use this with Teller Connect to connect user bank accounts to your app.
+      - generic [ref=e47]:
+        - generic [ref=e48]:
+          - generic [ref=e49]:
+            - generic [ref=e50]: Application name
+            - textbox "Application name" [ref=e52]:
+              - /placeholder: My Demo App
+              - text: Expense Splitter
+          - generic [ref=e53]:
+            - generic [ref=e54]: Please briefly tell us about what you're building.
+            - textbox "Please briefly tell us about what you're building." [ref=e56]: A "soloware" project for my partner and I so that whenever one of us uses our cards it automatically splits the cost (Think groceries etc)
+          - heading "Webhooks" [level=2] [ref=e57]
+          - generic [ref=e58]:
+            - text: Teller can send you
+            - link "webhook events" [ref=e59] [cursor=pointer]:
+              - /url: /docs/api/webhooks
+            - text: related to your application and its accounts.
+          - generic [ref=e60]:
+            - generic [ref=e61]: Webhook URL
+            - textbox "Webhook URL" [ref=e64]
+        - heading "API Version" [level=2] [ref=e65]
+        - generic [ref=e67]: The application is currently using the latest API version (2020-10-12).
+        - generic [ref=e68]:
+          - heading "Developer Usage Remaining" [level=2] [ref=e69]
+          - generic [ref=e70]:
+            - text: "Remaining enrollments: 99"
+            - link "Request production access" [ref=e71] [cursor=pointer]:
+              - /url: mailto:support@teller.io?subject=Production access request for Expense+Splitter
+        - heading "Token Signing Key" [level=2] [ref=e72]
+        - generic [ref=e73]: Teller signs enrollment tokens to prevent token reuse attacks.
+        - generic [ref=e75]:
+          - text: "Ed25519 public key:"
+          - code [ref=e76]: cXLqnm**********
+          - button "Copy" [ref=e77] [cursor=pointer]
+        - button "Save" [ref=e79] [cursor=pointer]
+  - contentinfo

@@ -1,0 +1,12 @@
+- generic [active] [ref=e1]:
+  - heading "Link a bank through Teller" [level=1] [ref=e2]
+  - paragraph [ref=e3]:
+    - text: "Environment:"
+    - code [ref=e4]: sandbox
+    - text: ". Sandbox creds:"
+    - code [ref=e5]: username
+    - text: /
+    - code [ref=e6]: password
+    - text: .
+  - button "Open Teller Connect" [ref=e7] [cursor=pointer]
+  - paragraph

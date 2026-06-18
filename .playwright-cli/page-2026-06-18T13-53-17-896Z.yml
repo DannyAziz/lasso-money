@@ -1,0 +1,34 @@
+- generic [ref=e1]:
+  - heading "Link a bank through Teller" [level=1] [ref=e2]
+  - paragraph [ref=e3]:
+    - text: "Environment:"
+    - code [ref=e4]: sandbox
+    - text: ". Sandbox creds:"
+    - code [ref=e5]: username
+    - text: /
+    - code [ref=e6]: password
+    - text: .
+  - button "Open Teller Connect" [ref=e7] [cursor=pointer]
+  - paragraph
+  - iframe [active] [ref=e8]:
+    - generic [active]:
+      - generic [ref=f9e156]:
+        - navigation [ref=f9e157]:
+          - button [ref=f9e158] [cursor=pointer]:
+            - img
+          - img [ref=f9e160]
+          - button [ref=f9e167] [cursor=pointer]:
+            - img
+        - main [ref=f9e168]:
+          - generic [ref=f9e169]:
+            - img [ref=f9e170]
+            - generic [ref=f9e171]:
+              - generic [ref=f9e172]: Chase
+              - generic [ref=f9e173]: Powered by Teller
+          - generic [ref=f9e174]:
+            - generic [ref=f9e175]: By entering your credentials you’re enabling Teller to retrieve your financial information on behalf of Expense Splitter
+            - generic [ref=f9e176]:
+              - textbox "User ID" [ref=f9e178]
+              - textbox "Password" [ref=f9e180]
+              - button "Next" [ref=f9e182] [cursor=pointer]
+      - contentinfo

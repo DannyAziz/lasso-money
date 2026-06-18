@@ -577,7 +577,7 @@ func (a App) init(args []string) error {
 	if err := os.MkdirAll(filepath.Dir(paths.ConfigFile), 0o700); err != nil {
 		return err
 	}
-	body := strings.TrimSpace(`# Teller application ID from https://dashboard.teller.io
+	body := strings.TrimSpace(`# Teller application ID from https://teller.io/settings/application
 TELLER_APPLICATION_ID=
 
 # sandbox | development | production
@@ -713,7 +713,7 @@ func doctorChecks(paths config.Paths, cfg config.Env, cfgErr error, enrollmentPa
 
 	if cfgErr == nil {
 		if cfg.Get("TELLER_APPLICATION_ID") == "" {
-			add("application_id", "missing", "TELLER_APPLICATION_ID is empty", fmt.Sprintf("set TELLER_APPLICATION_ID in %s (from https://dashboard.teller.io)", paths.ConfigFile))
+			add("application_id", "missing", "TELLER_APPLICATION_ID is empty", fmt.Sprintf("set TELLER_APPLICATION_ID in %s (from https://teller.io/settings/application)", paths.ConfigFile))
 		} else {
 			add("application_id", "ok", "TELLER_APPLICATION_ID is set", "")
 		}
@@ -732,7 +732,7 @@ func doctorChecks(paths config.Paths, cfg config.Env, cfgErr error, enrollmentPa
 			for _, c := range []struct{ name, key string }{{"mtls_certificate", "TELLER_CERT_PATH"}, {"mtls_key", "TELLER_KEY_PATH"}} {
 				value := cfg.Get(c.key)
 				if value == "" {
-					add(c.name, "missing", c.key+" is empty", fmt.Sprintf("set %s in %s (download from https://dashboard.teller.io)", c.key, paths.ConfigFile))
+					add(c.name, "missing", c.key+" is empty", fmt.Sprintf("set %s in %s (create at https://teller.io/settings/certificates)", c.key, paths.ConfigFile))
 					continue
 				}
 				expanded := config.ExpandHome(value)

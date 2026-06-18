@@ -1,0 +1,3 @@
+[     100ms] [WARNING] <link rel=preload> uses an unsupported `as` value @ https://teller.io/:14
+[     100ms] [WARNING] <link rel=preload> uses an unsupported `as` value @ https://teller.io/:15
+[     325ms] [WARNING] THREE.Texture: Property .encoding has been replaced by .colorSpace. @ https://cdn.teller.io/web/assets/js/landing-c04ef9a5fd06f8df953f26604a22a8a4.js?vsn=d:1

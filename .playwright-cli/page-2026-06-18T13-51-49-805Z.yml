@@ -1,0 +1,159 @@
+- generic [active] [ref=e1]:
+  - banner [ref=e2]:
+    - generic [ref=e3]:
+      - link [ref=e4] [cursor=pointer]:
+        - /url: /
+        - img [ref=e5]
+      - generic [ref=e19]:
+        - link "API Documentation" [ref=e21] [cursor=pointer]:
+          - /url: /docs
+        - link "Sign in" [ref=e22] [cursor=pointer]:
+          - /url: /session
+  - main [ref=e23]:
+    - heading "Instantly connect your app to thousands of financial institutions" [level=1] [ref=e29]
+    - generic [ref=e31]:
+      - generic [ref=e32]:
+        - generic [ref=e33]:
+          - heading "The easiest way users connect their bank accounts to your app." [level=1] [ref=e34]
+          - paragraph [ref=e35]: Teller lets users connect their accounts in seconds, and you verify account ownership, ACH details, balances, and transactions with ease.
+        - generic [ref=e36]:
+          - heading "The most stable and reliable connections in the industry." [level=1] [ref=e37]
+          - paragraph [ref=e38]: Users that connect their accounts with Teller stay connected for longer. Eliminate churn and customer support workload caused by brittle bank connections forever.
+      - generic [ref=e41]:
+        - generic [ref=e42]:
+          - heading "Next generation APIs and user experience." [level=1] [ref=e43]
+          - paragraph [ref=e44]: Build more compelling apps and services by building on APIs that can provide live, real-time data and instant payments using Zelle.
+        - generic [ref=e45]:
+          - heading "Trusted by the world's leading fintech brands" [level=1] [ref=e46]
+          - list [ref=e47]:
+            - listitem [ref=e48]:
+              - link [ref=e49] [cursor=pointer]:
+                - /url: https://pipe.com
+                - img [ref=e50]
+            - listitem [ref=e54]:
+              - link [ref=e55] [cursor=pointer]:
+                - /url: https://brex.com
+                - img [ref=e56]
+            - listitem [ref=e59]:
+              - link "capchase" [ref=e60] [cursor=pointer]:
+                - /url: https://capchase.com
+                - img "capchase" [ref=e61]
+            - listitem [ref=e65]:
+              - link [ref=e66] [cursor=pointer]:
+                - /url: http://brightmoney.co
+                - img [ref=e67]
+            - listitem [ref=e72]:
+              - link [ref=e73] [cursor=pointer]:
+                - /url: https://airbase.com
+                - img [ref=e74]
+    - generic [ref=e78]:
+      - heading "Simple integration. Powerful API." [level=1] [ref=e79]
+      - generic [ref=e80]:
+        - list [ref=e81]:
+          - listitem [ref=e82] [cursor=pointer]: Get Accounts
+          - listitem [ref=e83] [cursor=pointer]: Get Balance
+          - listitem [ref=e84] [cursor=pointer]: Get Transactions
+          - listitem [ref=e85] [cursor=pointer]: Get Identity
+          - listitem [ref=e86] [cursor=pointer]: Make Payment
+        - generic [ref=e88]:
+          - generic [ref=e89]: █
+          - generic [ref=e90]:
+            - code
+            - code
+      - list [ref=e91]:
+        - listitem [ref=e92]:
+          - heading "Integrate with ease" [level=2] [ref=e93]
+          - paragraph [ref=e94]: Integrate in an afternoon with our simple yet powerful API, comprehensive documentation and guides.
+        - listitem [ref=e95]:
+          - heading "Everything you need" [level=2] [ref=e96]
+          - paragraph [ref=e97]: Language bindings are available in a variety of programming languages as well as iOS & Android SDKs for Teller Connect.
+        - listitem [ref=e98]:
+          - heading "Zero-code Plaid migration" [level=2] [ref=e99]
+          - paragraph [ref=e100]:
+            - text: With
+            - link "Sidecar" [ref=e101] [cursor=pointer]:
+              - /url: https://blog.teller.io/blog/2023/10/19/sidecar/
+            - text: switching to Teller is reduced to a one-line config change with no other updates required to your application.
+    - generic [ref=e103]:
+      - heading "Thousands of supported institutions" [level=1] [ref=e104]
+      - paragraph [ref=e105]: Connect instantly with more than 7,000 financial institutions and fall back to same-day ACH microdeposit verification for everyone else.
+      - generic [ref=e107]:
+        - generic [ref=e108]:
+          - img [ref=e109]
+          - searchbox "Search" [ref=e112]
+        - list [ref=e113]:
+          - listitem [ref=e114]:
+            - img [ref=e115]
+            - paragraph [ref=e116]: Chase
+          - listitem [ref=e117]:
+            - img [ref=e118]
+            - paragraph [ref=e119]: Bank of America
+          - listitem [ref=e120]:
+            - img [ref=e121]
+            - paragraph [ref=e122]: Wells Fargo
+          - listitem [ref=e123]:
+            - img [ref=e124]
+            - paragraph [ref=e125]: CreditOne
+          - listitem [ref=e126]:
+            - img [ref=e127]
+            - paragraph [ref=e128]: PNC
+          - listitem [ref=e129]:
+            - img [ref=e130]
+            - paragraph [ref=e131]: CapitalOne
+      - paragraph [ref=e132]: All names are trademarks™ or registered trademarks® of their respective holders. Their usage does not imply any affiliation with or endorsement by their holders.
+    - generic [ref=e134]:
+      - heading "Flexible pricing that scales with you." [level=1] [ref=e135]
+      - generic [ref=e137]:
+        - paragraph [ref=e139]: Developer
+        - paragraph [ref=e141]: Teller is free for independent developers and teams prototyping ideas. Our developer tier includes 100 live connections. Provided that you never need more than that you won't owe us a penny.
+        - paragraph [ref=e143]: Production
+        - generic [ref=e144]:
+          - generic [ref=e146]:
+            - term [ref=e147]: Verify
+            - definition [ref=e148]: Verified ACH account and routing numbers.
+          - generic [ref=e149]:
+            - paragraph [ref=e150]: $1.50
+            - paragraph [ref=e151]: Per account
+          - generic [ref=e153]:
+            - term [ref=e154]: Balance
+            - definition [ref=e155]: Guaranteed live account balances. Used for underwriting or ensuring sufficient funds are available before submitting an ACH debit.
+          - generic [ref=e156]:
+            - paragraph [ref=e157]: $0.10
+            - paragraph [ref=e158]: Per API call
+          - generic [ref=e160]:
+            - term [ref=e161]: Transactions
+            - definition [ref=e162]: View historical account transactions and subcribe to updates as new transactions are posted.
+          - generic [ref=e163]:
+            - paragraph [ref=e164]: $0.30
+            - paragraph [ref=e165]: Per enrollment, per month
+          - generic [ref=e167]:
+            - term [ref=e168]: Identity
+            - definition [ref=e169]: Verify bank account ownership information using registered names, email addresses, telephone numbers, and physical addresses of the account owner.
+          - generic [ref=e170]:
+            - paragraph [ref=e171]: $1.75
+            - paragraph [ref=e172]: Per API call
+        - paragraph [ref=e174]: Enterprise
+        - generic [ref=e176]:
+          - paragraph [ref=e177]: We offer a number of product customizations to support the unique requirements of large customers
+          - list [ref=e178]:
+            - listitem [ref=e179]: Custom and volume-based pricing
+            - listitem [ref=e180]: Bring-your-own account picker for multi-vendor solutions
+            - listitem [ref=e181]: Customizable and co-branded user consent screens
+            - listitem [ref=e182]: Premium Slack support with our product engineering team
+            - listitem [ref=e183]: SOC 2 Type 2 certification
+            - listitem [ref=e184]: Bespoke due diligence requirements
+            - listitem [ref=e185]: Customizable account refresh schedules
+  - contentinfo [ref=e186]:
+    - list [ref=e187]:
+      - listitem [ref=e188]:
+        - link "Legal" [ref=e189] [cursor=pointer]:
+          - /url: /legal
+      - listitem [ref=e190]:
+        - link "Blog" [ref=e191] [cursor=pointer]:
+          - /url: /blog
+      - listitem [ref=e192]:
+        - link "Documentation" [ref=e193] [cursor=pointer]:
+          - /url: /docs
+      - listitem [ref=e194]:
+        - link "Twitter" [ref=e195] [cursor=pointer]:
+          - /url: https://x.com/teller

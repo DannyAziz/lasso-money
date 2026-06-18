@@ -9,13 +9,16 @@ human or an AI agent can do.
 These need a browser and only you can do them. If an agent is helping, it
 will ask you for the values you collect here.
 
-1. Sign up at https://teller.io and open https://dashboard.teller.io.
-2. Create an application. Copy its **application ID** (`app_...`).
+1. Sign up at https://teller.io, then open https://teller.io/dashboard.
+2. Open **Settings → Application** (https://teller.io/settings/application).
+   Teller gives every account one application — copy the **application ID**
+   shown there (`app_...`). There is nothing to "create".
 3. Pick an **environment**:
    - `sandbox` — fake data, no certificates. Best for trying it out.
-   - `development` / `production` — real bank data. The dashboard gives you
-     an **mTLS certificate + private key** to download; save both files on
-     the machine where lasso will run.
+   - `development` / `production` — real bank data. Open **Settings →
+     Certificates** (https://teller.io/settings/certificates), create a
+     certificate, and download the **certificate + private key**; save both
+     files on the machine where lasso will run.
 
 That's the whole human-on-a-browser part. Everything below is just running
 the CLI with those values.
@@ -94,17 +97,20 @@ through the dashboard **one step at a time**, waiting for each before the
 next. Don't dump the whole list at once.
 
 1. "Go to https://teller.io and sign up (free), then open
-   https://dashboard.teller.io." — wait until they're in.
-2. "Create a new application." — wait.
-3. "Copy the Application ID — it starts with `app_`. Paste it here." —
-   capture it; this becomes `TELLER_APPLICATION_ID`.
-4. "Do you want **sandbox** (fake data, nothing to download, good for a
+   https://teller.io/dashboard." — wait until they're in.
+2. "Open Settings → Application (https://teller.io/settings/application).
+   Copy the Application ID shown there — it starts with `app_`. Paste it
+   here." — capture it; this becomes `TELLER_APPLICATION_ID`. (Every account
+   has one app already; there's nothing to create.)
+3. "Do you want **sandbox** (fake data, nothing to download, good for a
    first try) or **real bank data**?"
    - Sandbox → done, go to step 2 with `TELLER_ENV=sandbox`.
-   - Real → "In the dashboard, switch to **development**, download the
-     **certificate** and **private key** files, and save both on the
-     machine running lasso. Tell me the full path to each." — capture the
-     two paths; never ask them to paste the file contents.
+   - Real → "Set the environment to **development**, then open Settings →
+     Certificates (https://teller.io/settings/certificates), create a
+     certificate, and download the **certificate** and **private key**
+     files. Save both on the machine running lasso and tell me the full path
+     to each." — capture the two paths; never ask them to paste the file
+     contents.
 
 Then proceed to step 2 with the values they gave you. If they already have
 an app ID, skip this entirely.

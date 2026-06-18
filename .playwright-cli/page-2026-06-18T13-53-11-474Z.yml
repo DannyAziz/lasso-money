@@ -1,0 +1,115 @@
+- generic [ref=e1]:
+  - heading "Link a bank through Teller" [level=1] [ref=e2]
+  - paragraph [ref=e3]:
+    - text: "Environment:"
+    - code [ref=e4]: sandbox
+    - text: ". Sandbox creds:"
+    - code [ref=e5]: username
+    - text: /
+    - code [ref=e6]: password
+    - text: .
+  - button "Open Teller Connect" [ref=e7] [cursor=pointer]
+  - paragraph
+  - iframe [active] [ref=e8]:
+    - generic [active]:
+      - generic [ref=f9e51]:
+        - navigation [ref=f9e52]:
+          - link [ref=f9e53] [cursor=pointer]:
+            - /url: /connect/app_p03e7op5ddtfo9kmcu000?environment=sandbox&loader_id=load_31tnnan0k5c&origin=http%3A%2F%2F127.0.0.1%3A8765&select_account=disabled
+            - img
+          - img [ref=f9e55]
+          - link [ref=f9e62] [cursor=pointer]:
+            - /url: /connect/app_p03e7op5ddtfo9kmcu000?environment=sandbox&loader_id=load_31tnnan0k5c&origin=http%3A%2F%2F127.0.0.1%3A8765&select_account=disabled
+            - img
+        - main [ref=f9e63]:
+          - generic [ref=f9e64]:
+            - img [ref=f9e65]
+            - textbox "Search" [ref=f9e67]
+          - list [ref=f9e68]:
+            - listitem [ref=f9e69]:
+              - button "Chase" [ref=f9e70] [cursor=pointer]:
+                - img [ref=f9e71]
+                - generic [ref=f9e72]: Chase
+            - listitem [ref=f9e73]:
+              - button "Bank of America" [ref=f9e74] [cursor=pointer]:
+                - img [ref=f9e75]
+                - generic [ref=f9e76]: Bank of America
+            - listitem [ref=f9e77]:
+              - button "Wells Fargo" [ref=f9e78] [cursor=pointer]:
+                - img [ref=f9e79]
+                - generic [ref=f9e80]: Wells Fargo
+            - listitem [ref=f9e81]:
+              - button "CreditOne" [ref=f9e82] [cursor=pointer]:
+                - img [ref=f9e83]
+                - generic [ref=f9e84]: CreditOne
+            - listitem [ref=f9e85]:
+              - button "PNC" [ref=f9e86] [cursor=pointer]:
+                - img [ref=f9e87]
+                - generic [ref=f9e88]: PNC
+            - listitem [ref=f9e89]:
+              - button "CapitalOne" [ref=f9e90] [cursor=pointer]:
+                - img [ref=f9e91]
+                - generic [ref=f9e92]: CapitalOne
+            - listitem [ref=f9e93]:
+              - button "US Bank" [ref=f9e94] [cursor=pointer]:
+                - img [ref=f9e95]
+                - generic [ref=f9e96]: US Bank
+            - listitem [ref=f9e97]:
+              - button "USAA" [ref=f9e98] [cursor=pointer]:
+                - img [ref=f9e99]
+                - generic [ref=f9e100]: USAA
+            - listitem [ref=f9e101]:
+              - button "TD Bank" [ref=f9e102] [cursor=pointer]:
+                - img [ref=f9e103]
+                - generic [ref=f9e104]: TD Bank
+            - listitem [ref=f9e105]:
+              - button "Mercury" [ref=f9e106] [cursor=pointer]:
+                - img [ref=f9e107]
+                - generic [ref=f9e108]: Mercury
+            - listitem [ref=f9e109]:
+              - button "Citibank" [ref=f9e110] [cursor=pointer]:
+                - img [ref=f9e111]
+                - generic [ref=f9e112]: Citibank
+            - listitem [ref=f9e113]:
+              - button "Silicon Valley Bank" [ref=f9e114] [cursor=pointer]:
+                - img [ref=f9e115]
+                - generic [ref=f9e116]: Silicon Valley Bank
+            - listitem [ref=f9e117]:
+              - button "First Republic" [ref=f9e118] [cursor=pointer]:
+                - img [ref=f9e119]
+                - generic [ref=f9e120]: First Republic
+            - listitem [ref=f9e121]:
+              - button "Brex" [ref=f9e122] [cursor=pointer]:
+                - img [ref=f9e123]
+                - generic [ref=f9e124]: Brex
+            - listitem [ref=f9e125]:
+              - button "American Express" [ref=f9e126] [cursor=pointer]:
+                - img [ref=f9e127]
+                - generic [ref=f9e128]: American Express
+            - listitem [ref=f9e129]:
+              - button "AngelList" [ref=f9e130] [cursor=pointer]:
+                - img [ref=f9e131]
+                - generic [ref=f9e132]: AngelList
+            - listitem [ref=f9e133]:
+              - button "Morgan Stanley" [ref=f9e134] [cursor=pointer]:
+                - img [ref=f9e135]
+                - generic [ref=f9e136]: Morgan Stanley
+            - listitem [ref=f9e137]:
+              - button "Navy Federal" [ref=f9e138] [cursor=pointer]:
+                - img [ref=f9e139]
+                - generic [ref=f9e140]: Navy Federal
+            - listitem [ref=f9e141]:
+              - button "Truist" [ref=f9e142] [cursor=pointer]:
+                - img [ref=f9e143]
+                - generic [ref=f9e144]: Truist
+            - listitem [ref=f9e145]:
+              - button "Regions" [ref=f9e146] [cursor=pointer]:
+                - img [ref=f9e147]
+                - generic [ref=f9e148]: Regions
+            - listitem [ref=f9e149]:
+              - button "BBVA" [ref=f9e150] [cursor=pointer]:
+                - img [ref=f9e151]
+                - generic [ref=f9e152]: BBVA
+            - listitem [ref=f9e153]: Can't find your bank? Try searching instead.
+        - contentinfo [ref=f9e154]: All trademarks are property of their respective holders. Their usage does not imply any affiliation with or endorsement by them.
+      - contentinfo

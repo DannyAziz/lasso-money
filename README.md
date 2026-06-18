@@ -47,13 +47,13 @@ Alternatively, if you already have [Go 1.26 or newer](https://go.dev/doc/install
 go install github.com/dannyaziz/lasso-money/cmd/lasso@latest
 ```
 
-### 2. Create a Teller application
+### 2. Get your Teller application ID
 
-1. Sign up at [teller.io](https://teller.io) and open the [Teller dashboard](https://dashboard.teller.io).
-2. Create an application and copy its application ID (`app_...`).
+1. Sign up at [teller.io](https://teller.io) and open the [dashboard](https://teller.io/dashboard).
+2. Open **Settings → Application** and copy the application ID (`app_...`). Every account already has one application.
 3. Choose an environment:
    - **Sandbox** uses fake bank data and requires no certificates. Start here if you are trying Lasso for the first time.
-   - **Development** or **production** uses real bank data. Download the mTLS certificate and private key supplied by Teller.
+   - **Development** or **production** uses real bank data. Under **Settings → Certificates**, create a certificate and download the mTLS certificate and private key.
 
 ### 3. Configure Lasso
 
