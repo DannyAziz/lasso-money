@@ -1,197 +1,191 @@
 # Lasso Money
 
-Local-first finance data CLI/MCP for agents. The current MVP is Teller-powered, with a provider-agnostic `lasso` command surface.
+A local-first, read-only command-line tool for exploring your bank data — and giving AI agents a safe, structured way to do the same.
+
+Lasso connects to your bank through [Teller](https://teller.io), stores a local SQLite cache, and lets you search transactions, summarize spending, inspect cash flow, and export your data.
+
+> **Early release:** Lasso currently requires a Teller account.
+
+## What you can do
+
+```bash
+lasso accounts
+lasso balances
+lasso sync
+lasso tx --since 30d
+lasso search "amazon" --since 90d
+lasso spend --group merchant --since month
+lasso cashflow --since 6mo
+lasso export tx --since month --format csv --out transactions.csv
+```
+
+Lasso only reads from Teller. Your configuration, enrollment token, and transaction cache stay in `~/.lasso` on your machine.
 
 ## Install
+
+### 1. Install Lasso
+
+On macOS or Linux:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/DannyAziz/lasso-money/main/install.sh | sh
 ```
 
-Or with a Go toolchain:
+The installer downloads a precompiled binary, verifies its checksum, and installs it to `/usr/local/bin` or `~/.local/bin`. **Go is not required.**
+
+Verify the installation:
+
+```bash
+lasso version
+```
+
+If the installer says `~/.local/bin` is not on your `PATH`, follow the command it prints.
+
+Alternatively, if you already have [Go 1.26 or newer](https://go.dev/doc/install):
 
 ```bash
 go install github.com/dannyaziz/lasso-money/cmd/lasso@latest
 ```
 
-Then run setup:
+### 2. Create a Teller application
 
-- **Humans**: `lasso init`, then `lasso doctor` and follow its output.
-- **Agents**: read [SETUP.md](SETUP.md) — `lasso doctor --format json` is the
-  setup state machine, and `lasso connect --no-open --format json` emits the
-  Connect URL as a JSON event for relaying to a human.
+1. Sign up at [teller.io](https://teller.io) and open the [Teller dashboard](https://dashboard.teller.io).
+2. Create an application and copy its application ID (`app_...`).
+3. Choose an environment:
+   - **Sandbox** uses fake bank data and requires no certificates. Start here if you are trying Lasso for the first time.
+   - **Development** or **production** uses real bank data. Download the mTLS certificate and private key supplied by Teller.
 
-## Decision
+### 3. Configure Lasso
 
-Build a **Teller-only Go CLI** first under the **Lasso Money** OSS product name. Forget Plaid for the MVP.
-
-Why Go now:
-- Best fit for a Mercury-style installable CLI.
-- Single-binary distribution later.
-- Native mTLS/HTTP support.
-- Fast startup and clean shell ergonomics.
-- Python remains useful as reference/donor code from the existing Teller MCP, but the product surface should be Go.
-
-## Current implementation
+Create the config file:
 
 ```bash
+lasso init
+```
+
+Open `~/.lasso/config.env` and add your Teller details.
+
+For sandbox:
+
+```text
+TELLER_APPLICATION_ID=app_your_application_id
+TELLER_ENV=sandbox
+```
+
+For real bank data:
+
+```text
+TELLER_APPLICATION_ID=app_your_application_id
+TELLER_ENV=development
+TELLER_CERT_PATH=/full/path/to/certificate.pem
+TELLER_KEY_PATH=/full/path/to/private_key.pem
+```
+
+Check your setup:
+
+```bash
+lasso doctor
+```
+
+Follow its suggested fix until it reports `ready`.
+
+### 4. Link your bank
+
+```bash
+lasso connect
+```
+
+Your browser will open Teller Connect. Complete the bank login there; Lasso never asks you to paste your banking credentials into the terminal.
+
+For Teller's sandbox, use username `username` and password `password`.
+
+### 5. Sync your data
+
+```bash
+lasso sync
+lasso cache status
+```
+
+You are ready to use Lasso.
+
+## Everyday use
+
+```bash
+# See accounts and current balances
+lasso accounts
+lasso balances
+
+# Refresh the local cache
+lasso sync --since 90d
+
+# Browse and search transactions
+lasso tx --since 30d
+lasso search "coffee" --since 90d
+
+# Understand spending and cash flow
+lasso spend --group merchant --since month
+lasso merchants top --since 90d
+lasso cashflow --since 6mo
+
+# Export your data
+lasso export tx --since ytd --format csv --out transactions.csv
+```
+
+Run `lasso --help` for all commands and flags.
+
+## Use with an AI agent
+
+Lasso provides command schemas and stable JSON output for agents:
+
+```bash
+lasso --llms
+lasso schema
+lasso transaction list --since 30d --format json
+lasso spend summary --group merchant --since month --format json
+```
+
+If an agent is installing Lasso for you, give it [SETUP.md](SETUP.md). Bank linking still requires you to complete Teller Connect in a browser.
+
+## Where your data lives
+
+Lasso writes only to local files:
+
+```text
+~/.lasso/config.env       Teller application settings
+~/.lasso/enrollment.json Teller enrollment token
+~/.lasso/lasso.db        SQLite transaction cache
+```
+
+The config and enrollment files are created with owner-only permissions. Do not commit or share them. `lasso whoami` shows enrollment details with the access token redacted.
+
+## Troubleshooting
+
+Start with:
+
+```bash
+lasso doctor
+```
+
+Common fixes:
+
+- **`lasso: command not found`** — add `$(go env GOPATH)/bin` to your `PATH`.
+- **Missing application ID** — add `TELLER_APPLICATION_ID` to `~/.lasso/config.env`.
+- **Missing certificate or key** — real-data environments require both Teller mTLS files and their full paths.
+- **Enrollment or authentication error** — run `lasso connect` again.
+- **Bank requires MFA or re-login** — complete that action with your bank, then reconnect.
+
+For machine-readable errors and suggested next actions, add `--format json`.
+
+## Build from source
+
+```bash
+git clone https://github.com/DannyAziz/lasso-money.git
+cd lasso-money
 go test ./...
 go build -o ./bin/lasso ./cmd/lasso
 ./bin/lasso --help
 ```
 
-Implemented:
-- Go module: `github.com/dannyaziz/lasso-money`
-- Entry point: `cmd/lasso/main.go`
-- Root CLI/help/version: `internal/cli`
-- Agent-first affordances inspired by Stripe Link CLI:
-  - `--llms` and `--llms-full` JSON command guides
-  - `schema` / `schema <command>` command metadata
-  - global `--format json` envelope output for core commands
-  - canonical resource aliases such as `account list`, `transaction list`, `merchant top`
-- `init` config template command
-- `doctor` config/enrollment verifier that does not print secrets; `--format json` emits per-check statuses with fix hints (the agent setup state machine)
-- `connect` localhost Teller Connect flow; `--format json` emits a `connect.url` event line for agent relay
-- `whoami` with redacted access token
-- `accounts` live Teller accounts command
-- `balances` live Teller balances command
-- `tx` cached transaction window command (`--live` fetches directly from Teller)
-- `sync` live Teller → local SQLite cache
-- `search` cached transaction search
-- `spend` cached spending summaries by merchant/category/account/month
-- `merchants top` cached merchant leaderboard
-- `cashflow` cached monthly inflow/outflow/net
-- cached transaction filters: status, min/max amount, category, merchant/counterparty
-- `export tx` cached CSV/JSON/JSONL export
-- `cache status` cache inspection
-- structured error envelopes (`ok: false`) on stdout with `--format json`
-- semantic exit codes (see `lasso --llms-full`)
-- retry with backoff for retryable Teller responses (429/502/504, network errors)
-- Config env parser: `internal/config`
-- Teller API client/enrollment handling: `internal/teller`
-- Tests for config parsing, enrollment storage, Teller client request behavior, store queries, and CLI parsing/envelopes
+## License
 
-## Local config
-
-Default files:
-
-```text
-~/.lasso/config.env
-~/.lasso/enrollment.json
-```
-
-Config keys:
-
-```text
-TELLER_APPLICATION_ID=
-TELLER_ENV=sandbox
-TELLER_CERT_PATH=
-TELLER_KEY_PATH=
-TELLER_ENROLLMENT_PATH=
-TELLER_DB_PATH=
-```
-
-## MVP target
-
-```bash
-lasso init
-lasso doctor
-lasso connect
-lasso whoami
-lasso accounts
-lasso balances
-lasso tx --account gold --since 30d
-lasso sync --since 90d
-lasso search "amazon" --since 90d
-lasso spend --group merchant --since month
-lasso export tx --since month --format csv --out transactions.csv
-```
-
-## Agent-first command surface
-
-Use the Stripe-style discovery commands before invoking the CLI from an agent:
-
-```bash
-lasso --llms
-lasso --llms-full
-lasso schema
-lasso schema transaction.list
-```
-
-Prefer canonical resource commands and `--format json` envelopes:
-
-```bash
-lasso account list --format json
-lasso balance list --format json
-lasso sync run --format json
-lasso transaction list --since ytd --merchant amazon --format json
-lasso transaction search amazon --since ytd --format json
-lasso spend summary --group merchant --since month --format json
-lasso merchant top --since 90d --format json
-lasso cashflow summary --since 6mo --format json
-lasso cache status --format json
-```
-
-Envelope shape:
-
-```json
-{
-  "ok": true,
-  "schema_version": "2026-06-12",
-  "command": "transaction.list",
-  "data": [],
-  "meta": { "count": 0, "source": "cache", "truncated": false },
-  "warnings": [],
-  "next_actions": []
-}
-```
-
-Errors with `--format json` emit an `ok: false` envelope on stdout and exit
-with a semantic code (0 success, 2 usage, 3 not found, 4 auth/config,
-5 conflict, 6 upstream unavailable, 7 retryable network error):
-
-```json
-{
-  "ok": false,
-  "schema_version": "2026-06-12",
-  "command": "transaction.list",
-  "error": {
-    "code": "config_error",
-    "message": "load config ~/.lasso/config.env: no such file or directory",
-    "retryable": false,
-    "fix": "run `lasso init` to create a config"
-  },
-  "warnings": [],
-  "next_actions": []
-}
-```
-
-## Sign conventions
-
-Teller signs amounts from the account's perspective: credit-card charges
-arrive positive, while depository (checking/savings) debits arrive negative.
-`spend`, `merchant top`, and `cashflow` normalize this per account type so
-that **positive always means money out** — credit amounts are used as-is and
-depository amounts are negated. Accounts with an unknown type are treated as
-credit. Raw `transaction list` output keeps Teller's original signs.
-
-Legacy aliases still work:
-
-```text
-accounts -> account list
-balances -> balance list
-tx -> transaction list
-search -> transaction search
-export tx -> transaction export
-spend -> spend summary
-merchants top -> merchant top
-cashflow -> cashflow summary
-sync -> sync run
-```
-
-## Files
-
-- `SETUP.md` — install + setup playbook for humans and agents.
-- `docs/research-notes.md` — source-grounded research on Teller docs and market landscape.
-- `docs/mvp-scope.md` — recommended product scope, command surface, architecture, milestones.
-- `docs/agent-first-stripe-alignment.md` — Stripe Link CLI-inspired agent-first plan and UX contract.
+No license has been added yet.
