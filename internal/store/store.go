@@ -2,7 +2,6 @@ package store
 
 import (
 	"database/sql"
-	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -71,16 +70,14 @@ type CacheSummary struct {
 	LastSyncStatus string         `json:"last_sync_status,omitempty"`
 }
 
-type SyncRun struct {
-	ID           int64
-	StartedAt    time.Time
-	FinishedAt   time.Time
-	AccountID    string
-	StartDate    string
-	EndDate      string
-	Status       string
-	FetchedCount int
-	ErrorMessage string
+type BalanceRow struct {
+	AccountID string `json:"account_id"`
+	Name      string `json:"name"`
+	LastFour  string `json:"last_four,omitempty"`
+	Currency  string `json:"currency,omitempty"`
+	Ledger    string `json:"ledger,omitempty"`
+	Available string `json:"available,omitempty"`
+	AsOf      string `json:"as_of"`
 }
 
 func Open(path string) (*Store, error) {
@@ -115,16 +112,15 @@ func (s *Store) UpsertAccounts(accounts []teller.Account) error {
 		return err
 	}
 	defer tx.Rollback()
-	stmt, err := tx.Prepare(`INSERT INTO accounts (id,enrollment_id,institution_id,institution_name,name,type,subtype,currency,last_four,status,raw_json,updated_at)
-		VALUES (?,?,?,?,?,?,?,?,?,?,?,CURRENT_TIMESTAMP)
-		ON CONFLICT(id) DO UPDATE SET enrollment_id=excluded.enrollment_id,institution_id=excluded.institution_id,institution_name=excluded.institution_name,name=excluded.name,type=excluded.type,subtype=excluded.subtype,currency=excluded.currency,last_four=excluded.last_four,status=excluded.status,raw_json=excluded.raw_json,updated_at=CURRENT_TIMESTAMP`)
+	stmt, err := tx.Prepare(`INSERT INTO accounts (id,enrollment_id,institution_id,institution_name,name,type,subtype,currency,last_four,status)
+		VALUES (?,?,?,?,?,?,?,?,?,?)
+		ON CONFLICT(id) DO UPDATE SET enrollment_id=excluded.enrollment_id,institution_id=excluded.institution_id,institution_name=excluded.institution_name,name=excluded.name,type=excluded.type,subtype=excluded.subtype,currency=excluded.currency,last_four=excluded.last_four,status=excluded.status`)
 	if err != nil {
 		return err
 	}
 	defer stmt.Close()
 	for _, a := range accounts {
-		raw, _ := json.Marshal(a)
-		if _, err := stmt.Exec(a.ID, a.EnrollmentID, a.InstitutionID, a.InstitutionName, a.Name, a.Type, a.Subtype, a.Currency, a.LastFour, a.Status, string(raw)); err != nil {
+		if _, err := stmt.Exec(a.ID, a.EnrollmentID, a.InstitutionID, a.InstitutionName, a.Name, a.Type, a.Subtype, a.Currency, a.LastFour, a.Status); err != nil {
 			return err
 		}
 	}
@@ -132,10 +128,51 @@ func (s *Store) UpsertAccounts(accounts []teller.Account) error {
 }
 
 func (s *Store) UpsertBalance(account teller.Account, balance teller.Balance) error {
-	raw, _ := json.Marshal(balance)
-	_, err := s.db.Exec(`INSERT INTO balances (account_id,ledger,available,as_of,raw_json,updated_at)
-		VALUES (?,?,?,?,?,CURRENT_TIMESTAMP)
-		ON CONFLICT(account_id) DO UPDATE SET ledger=excluded.ledger,available=excluded.available,as_of=excluded.as_of,raw_json=excluded.raw_json,updated_at=CURRENT_TIMESTAMP`, account.ID, balance.Ledger, balance.Available, time.Now().Format(time.RFC3339), string(raw))
+	_, err := s.db.Exec(`INSERT INTO balances (account_id,ledger,available,as_of)
+		VALUES (?,?,?,?)
+		ON CONFLICT(account_id) DO UPDATE SET ledger=excluded.ledger,available=excluded.available,as_of=excluded.as_of`, account.ID, balance.Ledger, balance.Available, time.Now().UTC().Format(time.RFC3339Nano))
+	return err
+}
+
+func (s *Store) CachedBalances(accountIDs []string) ([]BalanceRow, error) {
+	if accountIDs != nil && len(accountIDs) == 0 {
+		return []BalanceRow{}, nil
+	}
+	query := `SELECT a.id,coalesce(a.name,''),coalesce(a.last_four,''),coalesce(a.currency,''),coalesce(b.ledger,''),coalesce(b.available,''),coalesce(b.as_of,'')
+		FROM accounts a JOIN balances b ON b.account_id=a.id`
+	args := make([]any, len(accountIDs))
+	if accountIDs != nil {
+		query += " WHERE a.id IN (" + strings.TrimSuffix(strings.Repeat("?,", len(accountIDs)), ",") + ")"
+		for i, id := range accountIDs {
+			args[i] = id
+		}
+	}
+	rows, err := s.db.Query(query+" ORDER BY a.name", args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []BalanceRow{}
+	for rows.Next() {
+		var row BalanceRow
+		if err := rows.Scan(&row.AccountID, &row.Name, &row.LastFour, &row.Currency, &row.Ledger, &row.Available, &row.AsOf); err != nil {
+			return nil, err
+		}
+		out = append(out, row)
+	}
+	return out, rows.Err()
+}
+
+func (s *Store) PruneBalances(accountIDs []string) error {
+	if len(accountIDs) == 0 {
+		_, err := s.db.Exec(`DELETE FROM balances`)
+		return err
+	}
+	args := make([]any, len(accountIDs))
+	for i, id := range accountIDs {
+		args[i] = id
+	}
+	_, err := s.db.Exec("DELETE FROM balances WHERE account_id NOT IN ("+strings.TrimSuffix(strings.Repeat("?,", len(accountIDs)), ",")+")", args...)
 	return err
 }
 
@@ -145,22 +182,21 @@ func (s *Store) UpsertTransactions(account teller.Account, txs []teller.Transact
 		return err
 	}
 	defer tx.Rollback()
-	stmt, err := tx.Prepare(`INSERT INTO transactions (id,account_id,amount,currency,date,description,counterparty_name,category,status,type,running_balance,raw_json,updated_at)
-		VALUES (?,?,?,?,?,?,?,?,?,?,?,?,CURRENT_TIMESTAMP)
-		ON CONFLICT(id) DO UPDATE SET account_id=excluded.account_id,amount=excluded.amount,currency=excluded.currency,date=excluded.date,description=excluded.description,counterparty_name=excluded.counterparty_name,category=excluded.category,status=excluded.status,type=excluded.type,running_balance=excluded.running_balance,raw_json=excluded.raw_json,updated_at=CURRENT_TIMESTAMP`)
+	stmt, err := tx.Prepare(`INSERT INTO transactions (id,account_id,amount,currency,date,description,counterparty_name,category,status,type,running_balance)
+		VALUES (?,?,?,?,?,?,?,?,?,?,?)
+		ON CONFLICT(id) DO UPDATE SET account_id=excluded.account_id,amount=excluded.amount,currency=excluded.currency,date=excluded.date,description=excluded.description,counterparty_name=excluded.counterparty_name,category=excluded.category,status=excluded.status,type=excluded.type,running_balance=excluded.running_balance`)
 	if err != nil {
 		return err
 	}
 	defer stmt.Close()
 	for _, t := range txs {
-		raw, _ := json.Marshal(t)
 		cp := counterpartyName(t.Details)
 		cat := detailString(t.Details, "category")
 		rb := ""
 		if t.RunningBalance != nil {
 			rb = *t.RunningBalance
 		}
-		if _, err := stmt.Exec(t.ID, account.ID, t.Amount, account.Currency, t.Date, t.Description, cp, cat, t.Status, t.Type, rb, string(raw)); err != nil {
+		if _, err := stmt.Exec(t.ID, account.ID, t.Amount, account.Currency, t.Date, t.Description, cp, cat, t.Status, t.Type, rb); err != nil {
 			return err
 		}
 	}
@@ -175,8 +211,8 @@ func (s *Store) StartSyncRun(accountID, startDate, endDate string) (int64, error
 	return res.LastInsertId()
 }
 
-func (s *Store) FinishSyncRun(id int64, status string, fetched int, errMsg string) error {
-	_, err := s.db.Exec(`UPDATE sync_runs SET finished_at=CURRENT_TIMESTAMP,status=?,fetched_count=?,error_message=? WHERE id=?`, status, fetched, errMsg, id)
+func (s *Store) FinishSyncRun(id int64, status string, fetched int) error {
+	_, err := s.db.Exec(`UPDATE sync_runs SET finished_at=CURRENT_TIMESTAMP,status=?,fetched_count=? WHERE id=?`, status, fetched, id)
 	return err
 }
 
@@ -403,19 +439,13 @@ CREATE TABLE IF NOT EXISTS accounts (
   subtype TEXT,
   currency TEXT,
   last_four TEXT,
-  status TEXT,
-  alias TEXT,
-  raw_json TEXT,
-  created_at TEXT DEFAULT CURRENT_TIMESTAMP,
-  updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+  status TEXT
 );
 CREATE TABLE IF NOT EXISTS balances (
   account_id TEXT PRIMARY KEY REFERENCES accounts(id) ON DELETE CASCADE,
   ledger TEXT,
   available TEXT,
-  as_of TEXT,
-  raw_json TEXT,
-  updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+  as_of TEXT
 );
 CREATE TABLE IF NOT EXISTS transactions (
   id TEXT PRIMARY KEY,
@@ -428,10 +458,7 @@ CREATE TABLE IF NOT EXISTS transactions (
   category TEXT,
   status TEXT,
   type TEXT,
-  running_balance TEXT,
-  raw_json TEXT,
-  created_at TEXT DEFAULT CURRENT_TIMESTAMP,
-  updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+  running_balance TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_transactions_account_date ON transactions(account_id, date);
 CREATE INDEX IF NOT EXISTS idx_transactions_date ON transactions(date);
@@ -446,7 +473,6 @@ CREATE TABLE IF NOT EXISTS sync_runs (
   start_date TEXT,
   end_date TEXT,
   status TEXT,
-  fetched_count INTEGER DEFAULT 0,
-  error_message TEXT
+  fetched_count INTEGER DEFAULT 0
 );
 `

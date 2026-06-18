@@ -19,7 +19,7 @@ lasso cashflow --since 6mo
 lasso export tx --since month --format csv --out transactions.csv
 ```
 
-Lasso only reads from Teller. Your configuration, enrollment token, and transaction cache stay in `~/.lasso` on your machine.
+Lasso only reads from Teller. Your configuration, enrollment token, and local account, balance, transaction, and sync metadata cache stay in `~/.lasso` on your machine.
 
 ## Install
 
@@ -111,9 +111,10 @@ You are ready to use Lasso.
 ## Everyday use
 
 ```bash
-# See accounts and current balances
+# See live accounts and balances (balances are cached for five minutes)
 lasso accounts
 lasso balances
+lasso balances --live  # force a refresh
 
 # Refresh the local cache
 lasso sync --since 90d
@@ -140,8 +141,8 @@ Lasso provides command schemas and stable JSON output for agents:
 ```bash
 lasso --llms
 lasso schema
-lasso transaction list --since 30d --format json
-lasso spend summary --group merchant --since month --format json
+lasso tx --since 30d --format json
+lasso spend --group merchant --since month --format json
 ```
 
 If an agent is installing Lasso for you, give it [SETUP.md](SETUP.md). Bank linking still requires you to complete Teller Connect in a browser.
@@ -153,7 +154,7 @@ Lasso writes only to local files:
 ```text
 ~/.lasso/config.env       Teller application settings
 ~/.lasso/enrollment.json Teller enrollment token
-~/.lasso/lasso.db        SQLite transaction cache
+~/.lasso/lasso.db        SQLite account, balance, transaction, and sync cache
 ```
 
 The config and enrollment files are created with owner-only permissions. Do not commit or share them. `lasso whoami` shows enrollment details with the access token redacted.

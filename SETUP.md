@@ -167,7 +167,7 @@ with the enrollment metadata, and saves the access token to
 
 ```bash
 lasso accounts --format json       # proves the enrollment works end to end
-lasso sync run --format json       # caches accounts/balances/transactions
+lasso sync --format json           # caches accounts, transactions, sync metadata, and available balances
 lasso cache status --format json   # confirm counts and last sync
 ```
 
@@ -177,15 +177,18 @@ retries retryable Teller errors automatically.
 ## Day-to-day commands
 
 ```bash
-lasso balance list --format json
-lasso transaction list --since 30d --format json
-lasso transaction search "amazon" --since 90d --format json
-lasso spend summary --group merchant --since month --format json
-lasso cashflow summary --since 6mo --format json
-lasso transaction export --format csv --out tx.csv
+lasso balances --format json
+lasso balances --live --format json # bypass the five-minute balance cache
+lasso tx --since 30d --format json
+lasso search "amazon" --since 90d --format json
+lasso spend --group merchant --since month --format json
+lasso cashflow --since 6mo --format json
+lasso export tx --format csv --out tx.csv
 ```
 
-Sign convention: `spend`/`merchant top`/`cashflow` normalize amounts per
+`lasso balances` refreshes balances older than five minutes, while `--live` bypasses that TTL. `sync` attempts a balance refresh for each selected account and warns if a balance fetch or cache write fails; transaction syncing continues. The `as_of` field shows when each cached balance was fetched.
+
+Sign convention: `spend`/`merchants top`/`cashflow` normalize amounts per
 account type so positive always means money out.
 
 ## Failure modes
@@ -199,7 +202,7 @@ account type so positive always means money out.
 | `rate_limited` | Teller 429 | Back off and retry later (`retryable: true`) |
 | `upstream_unavailable` | Institution down (502/504) | Retry later (`retryable: true`) |
 | `network_error` | Request never completed | Check connectivity, retry |
-| `not_found` | Unknown account/resource | Re-check IDs via `lasso account list` |
+| `not_found` | Unknown account/resource | Re-check IDs via `lasso accounts` |
 | `usage_error` | Bad flags/arguments | Consult `lasso schema <command>` |
 
 Exit codes: `0` success, `1` general, `2` usage, `3` not found,
