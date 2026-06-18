@@ -33,9 +33,11 @@ lasso sync      # cache transactions locally
 ```
 
 The rest of this document is the **agent protocol** — how an AI agent sets
-lasso up for you (e.g. on a server, over chat) using the Part 1 values you
-provide. The one step an agent can't do alone is linking your bank, which
-happens in a browser; the agent relays a URL for you to open (step 3).
+lasso up for you (e.g. on a server, over chat). If you haven't done Part 1,
+the agent walks you through the Teller dashboard one step at a time
+(step 1.5). The two things only you can do, in a browser, are creating the
+Teller app and linking your bank; for the latter the agent relays a URL for
+you to open (step 3).
 
 ## How setup works
 
@@ -84,6 +86,28 @@ lasso doctor --format json
 - `enrollment` missing → step 3.
 
 Doctor exits `4` when not ready; that is expected mid-setup, not a crash.
+
+## Step 1.5 — guide the human through Teller (if they don't have an app ID yet)
+
+If `application_id` is missing and the human hasn't done Part 1, walk them
+through the dashboard **one step at a time**, waiting for each before the
+next. Don't dump the whole list at once.
+
+1. "Go to https://teller.io and sign up (free), then open
+   https://dashboard.teller.io." — wait until they're in.
+2. "Create a new application." — wait.
+3. "Copy the Application ID — it starts with `app_`. Paste it here." —
+   capture it; this becomes `TELLER_APPLICATION_ID`.
+4. "Do you want **sandbox** (fake data, nothing to download, good for a
+   first try) or **real bank data**?"
+   - Sandbox → done, go to step 2 with `TELLER_ENV=sandbox`.
+   - Real → "In the dashboard, switch to **development**, download the
+     **certificate** and **private key** files, and save both on the
+     machine running lasso. Tell me the full path to each." — capture the
+     two paths; never ask them to paste the file contents.
+
+Then proceed to step 2 with the values they gave you. If they already have
+an app ID, skip this entirely.
 
 ## Step 2 — write config
 
