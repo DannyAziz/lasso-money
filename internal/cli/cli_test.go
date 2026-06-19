@@ -2,9 +2,12 @@ package cli
 
 import (
 	"bytes"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -70,6 +73,82 @@ func runCLI(t *testing.T, args ...string) (string, string, int) {
 	var out, errOut bytes.Buffer
 	code := Main(args, &out, &errOut)
 	return out.String(), errOut.String(), code
+}
+
+func TestBalanceCacheFresh(t *testing.T) {
+	now := time.Now()
+	fresh := []store.BalanceRow{{AsOf: now.Add(-4 * time.Minute).Format(time.RFC3339Nano)}}
+	expired := []store.BalanceRow{{AsOf: now.Add(-5 * time.Minute).Format(time.RFC3339Nano)}}
+	if !balanceCacheFresh(fresh, now) {
+		t.Fatal("four-minute-old balance should be fresh")
+	}
+	if balanceCacheFresh(expired, now) || balanceCacheFresh(nil, now) {
+		t.Fatal("expired or empty balance cache should refresh")
+	}
+}
+
+func TestBalancesLiveRefreshesThenUsesCache(t *testing.T) {
+	configPath, dbPath := testSetup(t)
+	cache, err := store.Open(dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := cache.Migrate(); err != nil {
+		t.Fatal(err)
+	}
+	obsolete := teller.Account{ID: "acc_obsolete", Name: "Closed account"}
+	if err := cache.UpsertAccounts([]teller.Account{obsolete}); err != nil {
+		t.Fatal(err)
+	}
+	if err := cache.UpsertBalance(obsolete, teller.Balance{Ledger: "999.00"}); err != nil {
+		t.Fatal(err)
+	}
+	_ = cache.Close()
+
+	balanceCalls := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/accounts":
+			_, _ = w.Write([]byte(`[{"id":"acc_1","name":"Checking","type":"depository","currency":"USD","last_four":"4321","status":"open"}]`))
+		case "/accounts/acc_1/balances":
+			balanceCalls++
+			_, _ = w.Write([]byte(`{"account_id":"acc_1","ledger":"125.00","available":"100.00"}`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	file, err := os.OpenFile(configPath, os.O_APPEND|os.O_WRONLY, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = fmt.Fprintf(file, "TELLER_BASE_URL=%s\n", server.URL)
+	_ = file.Close()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	out, errOut, code := runCLI(t, "balances", "--live", "--format", "json", "--config", configPath)
+	if code != 0 || balanceCalls != 1 || !strings.Contains(out, `"as_of"`) || !strings.Contains(out, `"source": "live"`) || strings.Contains(out, "acc_obsolete") {
+		t.Fatalf("live: exit=%d calls=%d stderr=%q out=%s", code, balanceCalls, errOut, out)
+	}
+	db, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = db.Exec(`UPDATE balances SET as_of=?`, time.Now().Add(-balanceCacheTTL).Format(time.RFC3339Nano))
+	_ = db.Close()
+	if err != nil {
+		t.Fatal(err)
+	}
+	out, errOut, code = runCLI(t, "balances", "--format", "json", "--config", configPath)
+	if code != 0 || balanceCalls != 2 || !strings.Contains(out, `"source": "live"`) {
+		t.Fatalf("expired: exit=%d calls=%d stderr=%q out=%s", code, balanceCalls, errOut, out)
+	}
+	server.Close()
+	out, errOut, code = runCLI(t, "balances", "--format", "json", "--config", configPath)
+	if code != 0 || balanceCalls != 2 || !strings.Contains(out, `"source": "cache"`) || !strings.Contains(out, `"as_of"`) || strings.Contains(out, "acc_obsolete") {
+		t.Fatalf("cache: exit=%d calls=%d stderr=%q out=%s", code, balanceCalls, errOut, out)
+	}
 }
 
 func TestSearchAcceptsFlagsAfterQuery(t *testing.T) {
@@ -175,8 +254,11 @@ func TestTellerUpstreamErrorsMapToContract(t *testing.T) {
 func TestMerchantTopAcceptsLimit(t *testing.T) {
 	configPath, dbPath := testSetup(t)
 	seedCache(t, dbPath)
+	if _, _, code := runCLI(t, "merchants"); code != 2 {
+		t.Fatalf("merchants without top exit = %d, want 2", code)
+	}
 
-	out, errOut, code := runCLI(t, "--format", "json", "merchant", "top", "--since", "90d", "--limit", "5", "--config", configPath)
+	out, errOut, code := runCLI(t, "--format", "json", "merchants", "top", "--since", "90d", "--limit", "5", "--config", configPath)
 	if code != 0 {
 		t.Fatalf("exit = %d, stderr = %q", code, errOut)
 	}
@@ -196,7 +278,7 @@ func TestErrorsEmitEnvelopeAndExitCodes(t *testing.T) {
 	clearEnvOverrides(t)
 	missing := filepath.Join(t.TempDir(), "missing.env")
 
-	out, _, code := runCLI(t, "--format", "json", "transaction", "list", "--config", missing)
+	out, _, code := runCLI(t, "--format", "json", "tx", "--config", missing)
 	if code != 4 {
 		t.Fatalf("exit = %d, want 4", code)
 	}
@@ -220,6 +302,12 @@ func TestErrorsEmitEnvelopeAndExitCodes(t *testing.T) {
 	}
 	if _, _, code := runCLI(t, "tx", "--since", "bananas", "--config", missing); code != 2 {
 		t.Fatalf("bad since exit = %d, want 2", code)
+	}
+	if _, _, code := runCLI(t, "transaction", "list"); code != 2 {
+		t.Fatalf("removed command exit = %d, want 2", code)
+	}
+	if _, _, code := runCLI(t, "accounts", "--json"); code != 2 {
+		t.Fatalf("removed --json exit = %d, want 2", code)
 	}
 }
 
@@ -331,26 +419,61 @@ func TestParseGlobalArgs(t *testing.T) {
 	if format != "" || len(args) != 4 {
 		t.Fatalf("export args = %v, format = %q", args, format)
 	}
-	args, format = parseGlobalArgs([]string{"transaction", "export", "--format", "jsonl"}, "")
-	if format != "" || len(args) != 4 {
-		t.Fatalf("transaction export args = %v, format = %q", args, format)
-	}
 }
 
 func TestSchemaArgsFromCommand(t *testing.T) {
 	cases := map[string]string{
-		"accounts":           "account.list",
-		"tx":                 "transaction.list",
-		"search":             "transaction.search",
-		"whoami":             "whoami",
-		"account list":       "account.list",
-		"transaction search": "transaction.search",
-		"cache status":       "cache.status",
+		"accounts":      "account.list",
+		"balances":      "balance.list",
+		"tx":            "transaction.list",
+		"search":        "transaction.search",
+		"whoami":        "whoami",
+		"merchants top": "merchant.top",
+		"export tx":     "transaction.export",
+		"cache status":  "cache.status",
 	}
 	for in, want := range cases {
 		got := schemaArgsFromCommand(strings.Fields(in))
 		if len(got) != 1 || got[0] != want {
 			t.Fatalf("schemaArgsFromCommand(%q) = %v, want %q", in, got, want)
+		}
+	}
+	for _, args := range [][]string{{"schema", "balances", "extra"}, {"balances", "--schema", "extra"}} {
+		if _, _, code := runCLI(t, args...); code != 2 {
+			t.Fatalf("schema with extra argument %v exit = %d, want 2", args, code)
+		}
+	}
+	valid := []struct {
+		args []string
+		name string
+	}{
+		{[]string{"schema", "balances"}, "balance.list"},
+		{[]string{"balances", "--schema"}, "balance.list"},
+		{[]string{"merchants", "top", "--schema"}, "merchant.top"},
+		{[]string{"export", "tx", "--schema"}, "transaction.export"},
+		{[]string{"cache", "status", "--schema"}, "cache.status"},
+	}
+	for _, tc := range valid {
+		out, errOut, code := runCLI(t, tc.args...)
+		if code != 0 || !strings.Contains(out, `"name": "`+tc.name+`"`) {
+			t.Fatalf("schema invocation %v: exit=%d stderr=%q out=%s", tc.args, code, errOut, out)
+		}
+	}
+}
+
+func TestCommandSchemaFlagsMatchHandlers(t *testing.T) {
+	want := map[string][]string{
+		"transaction.list":   {"--config", "--account", "--from", "--to", "--since", "--limit", "--pending", "--posted", "--min", "--max", "--category", "--merchant", "--live"},
+		"transaction.search": {"query", "--config", "--from", "--to", "--since", "--limit", "--pending", "--posted", "--min", "--max", "--category", "--merchant"},
+		"transaction.export": {"--config", "--format csv|json|jsonl", "--out", "--from", "--to", "--since", "--limit", "--status", "--min", "--max", "--category", "--merchant"},
+		"spend.summary":      {"--config", "--group merchant|category|account|month", "--from", "--to", "--since", "--limit"},
+		"merchant.top":       {"--config", "--from", "--to", "--since", "--limit"},
+		"cashflow.summary":   {"--config", "--from", "--to", "--since"},
+	}
+	for name, flags := range want {
+		entry := commandSchemas()[name].(map[string]any)
+		if got := fmt.Sprint(entry["flags"]); got != fmt.Sprint(flags) {
+			t.Errorf("%s flags = %s, want %v", name, got, flags)
 		}
 	}
 }
@@ -383,16 +506,13 @@ func TestSelectAccount(t *testing.T) {
 }
 
 func TestStatusFilter(t *testing.T) {
-	if _, err := statusFilter(true, true, false); err == nil {
+	if _, err := statusFilter(true, true); err == nil {
 		t.Fatal("want error for --pending --posted")
 	}
-	if _, err := statusFilter(true, false, true); err == nil {
-		t.Fatal("want error for --all --pending")
-	}
-	if got, err := statusFilter(true, false, false); err != nil || got != "pending" {
+	if got, err := statusFilter(true, false); err != nil || got != "pending" {
 		t.Fatalf("got = %q, err = %v", got, err)
 	}
-	if got, err := statusFilter(false, false, false); err != nil || got != "" {
+	if got, err := statusFilter(false, false); err != nil || got != "" {
 		t.Fatalf("got = %q, err = %v", got, err)
 	}
 }

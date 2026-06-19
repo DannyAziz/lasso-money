@@ -112,7 +112,7 @@ func TestRunEndToEnd(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	m := regexp.MustCompile(`/callback\?token=([0-9a-f]+)`).FindSubmatch(body)
+	m := regexp.MustCompile(`/callback\?token=([A-Z2-7]+)`).FindSubmatch(body)
 	if m == nil {
 		t.Fatalf("page does not contain a callback token:\n%s", body)
 	}

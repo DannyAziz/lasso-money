@@ -4,7 +4,6 @@ import (
 	"context"
 	"crypto/rand"
 	"crypto/subtle"
-	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"html"
@@ -105,10 +104,7 @@ func Run(ctx context.Context, opts Options) (teller.Enrollment, error) {
 	}
 	defer listener.Close()
 
-	token, err := randomToken()
-	if err != nil {
-		return teller.Enrollment{}, err
-	}
+	token := rand.Text()
 	resultCh := make(chan connectResult, 1)
 	server := &http.Server{Handler: handler(opts, token, resultCh)}
 	go func() { _ = server.Serve(listener) }()
@@ -232,14 +228,6 @@ func handler(opts Options, token string, result chan<- connectResult) http.Handl
 		deliver(connectResult{err: fmt.Errorf("Teller Connect cancelled")})
 	})
 	return mux
-}
-
-func randomToken() (string, error) {
-	b := make([]byte, 16)
-	if _, err := rand.Read(b); err != nil {
-		return "", fmt.Errorf("generate connect token: %w", err)
-	}
-	return hex.EncodeToString(b), nil
 }
 
 func replace(s, old, value string) string {

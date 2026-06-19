@@ -8,6 +8,24 @@ import (
 	"github.com/dannyaziz/lasso-money/internal/teller"
 )
 
+func TestCachedBalancesIncludesAccountsWithoutBalances(t *testing.T) {
+	s, err := Open(filepath.Join(t.TempDir(), "test.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	if err := s.Migrate(); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.UpsertAccounts([]teller.Account{{ID: "acc_1", Name: "Checking"}}); err != nil {
+		t.Fatal(err)
+	}
+	rows, err := s.CachedBalances(nil)
+	if err != nil || len(rows) != 1 || rows[0].AccountID != "acc_1" || rows[0].AsOf != "" {
+		t.Fatalf("balances = %#v, err = %v", rows, err)
+	}
+}
+
 func TestStoreSyncQuerySpend(t *testing.T) {
 	s, err := Open(filepath.Join(t.TempDir(), "test.db"))
 	if err != nil {
@@ -39,6 +57,10 @@ func TestStoreSyncQuerySpend(t *testing.T) {
 	status := summary.Counts
 	if status["accounts"] != 1 || status["balances"] != 1 || status["transactions"] != 2 {
 		t.Fatalf("status = %#v", status)
+	}
+	balances, err := s.CachedBalances(nil)
+	if err != nil || len(balances) != 1 || balances[0].Ledger != "100.00" || balances[0].AsOf == "" {
+		t.Fatalf("balances = %#v, err = %v", balances, err)
 	}
 
 	rows, err := s.QueryTransactions(TxFilter{Query: "caf", From: "2026-06-01", To: "2026-06-30", Limit: 10})
@@ -152,7 +174,7 @@ func TestIncrementalStartDateAdvances(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := s.FinishSyncRun(runID, "ok", 1, ""); err != nil {
+	if err := s.FinishSyncRun(runID, "ok", 1); err != nil {
 		t.Fatal(err)
 	}
 	next, err := s.IncrementalStartDate("acc_1", 10, 90)
@@ -161,6 +183,48 @@ func TestIncrementalStartDateAdvances(t *testing.T) {
 	}
 	if want := time.Now().AddDate(0, 0, -10).Format(time.DateOnly); next != want {
 		t.Fatalf("incremental start = %q, want %q", next, want)
+	}
+}
+
+func TestLegacySchemaColumnsRemainCompatible(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "legacy.db")
+	s, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Migrate(); err != nil {
+		t.Fatal(err)
+	}
+	for _, statement := range []string{
+		`ALTER TABLE accounts ADD COLUMN alias TEXT`,
+		`ALTER TABLE accounts ADD COLUMN raw_json TEXT`,
+		`ALTER TABLE balances ADD COLUMN raw_json TEXT`,
+		`ALTER TABLE transactions ADD COLUMN raw_json TEXT`,
+		`ALTER TABLE sync_runs ADD COLUMN error_message TEXT`,
+	} {
+		if _, err := s.db.Exec(statement); err != nil {
+			t.Fatal(err)
+		}
+	}
+	_ = s.Close()
+
+	s, err = Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	if err := s.Migrate(); err != nil {
+		t.Fatal(err)
+	}
+	account := teller.Account{ID: "acc_legacy", Name: "Legacy"}
+	if err := s.UpsertAccounts([]teller.Account{account}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.UpsertBalance(account, teller.Balance{Ledger: "1.00"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.UpsertTransactions(account, []teller.Transaction{{ID: "tx_legacy", Amount: "1.00", Date: "2026-06-18"}}); err != nil {
+		t.Fatal(err)
 	}
 }
 

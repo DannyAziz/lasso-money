@@ -1,6 +1,7 @@
 # build outputs
 /bin/
 /dist/
+.playwright-cli/
 
 # local config/secrets
 .env
