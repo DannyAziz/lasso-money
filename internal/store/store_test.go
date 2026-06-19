@@ -8,6 +8,24 @@ import (
 	"github.com/dannyaziz/lasso-money/internal/teller"
 )
 
+func TestCachedBalancesIncludesAccountsWithoutBalances(t *testing.T) {
+	s, err := Open(filepath.Join(t.TempDir(), "test.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	if err := s.Migrate(); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.UpsertAccounts([]teller.Account{{ID: "acc_1", Name: "Checking"}}); err != nil {
+		t.Fatal(err)
+	}
+	rows, err := s.CachedBalances(nil)
+	if err != nil || len(rows) != 1 || rows[0].AccountID != "acc_1" || rows[0].AsOf != "" {
+		t.Fatalf("balances = %#v, err = %v", rows, err)
+	}
+}
+
 func TestStoreSyncQuerySpend(t *testing.T) {
 	s, err := Open(filepath.Join(t.TempDir(), "test.db"))
 	if err != nil {

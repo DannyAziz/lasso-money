@@ -169,10 +169,11 @@ func (a App) Run(args []string) error {
 		return nil
 	}
 	if hasSchemaFlag(args) {
-		if len(args) != 2 {
+		command := schemaArgsFromCommand(args)
+		if command == nil {
 			return usageErrorf("usage: lasso <command> --schema")
 		}
-		return a.schema(schemaArgsFromCommand(args))
+		return a.schema(command)
 	}
 
 	switch args[0] {
@@ -303,26 +304,28 @@ func hasSchemaFlag(args []string) bool {
 }
 
 func schemaArgsFromCommand(args []string) []string {
-	var command string
+	clean := make([]string, 0, len(args))
 	for _, arg := range args {
 		if arg != "--schema" {
-			command = arg
-			break
+			clean = append(clean, arg)
 		}
 	}
-	if command == "" {
+	if len(clean) == 0 {
 		return nil
 	}
 	canonical := map[string]string{
 		"accounts": "account.list", "balances": "balance.list", "sync": "sync.run",
-		"tx": "transaction.list", "search": "transaction.search", "export": "transaction.export",
-		"spend": "spend.summary", "merchants": "merchant.top", "cashflow": "cashflow.summary",
-		"cache": "cache.status",
+		"tx": "transaction.list", "search": "transaction.search", "export tx": "transaction.export",
+		"spend": "spend.summary", "merchants top": "merchant.top", "cashflow": "cashflow.summary",
+		"cache status": "cache.status",
 	}
-	if name := canonical[command]; name != "" {
+	if name := canonical[strings.Join(clean, " ")]; name != "" {
 		return []string{name}
 	}
-	return []string{command}
+	if len(clean) == 1 {
+		return clean
+	}
+	return nil
 }
 
 // parseFlags wraps fs.Parse so flag errors map to the usage exit code.

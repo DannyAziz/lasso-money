@@ -423,12 +423,14 @@ func TestParseGlobalArgs(t *testing.T) {
 
 func TestSchemaArgsFromCommand(t *testing.T) {
 	cases := map[string]string{
-		"accounts": "account.list",
-		"balances": "balance.list",
-		"tx":       "transaction.list",
-		"search":   "transaction.search",
-		"whoami":   "whoami",
-		"cache":    "cache.status",
+		"accounts":      "account.list",
+		"balances":      "balance.list",
+		"tx":            "transaction.list",
+		"search":        "transaction.search",
+		"whoami":        "whoami",
+		"merchants top": "merchant.top",
+		"export tx":     "transaction.export",
+		"cache status":  "cache.status",
 	}
 	for in, want := range cases {
 		got := schemaArgsFromCommand(strings.Fields(in))
@@ -441,10 +443,20 @@ func TestSchemaArgsFromCommand(t *testing.T) {
 			t.Fatalf("schema with extra argument %v exit = %d, want 2", args, code)
 		}
 	}
-	for _, args := range [][]string{{"schema", "balances"}, {"balances", "--schema"}} {
-		out, errOut, code := runCLI(t, args...)
-		if code != 0 || !strings.Contains(out, `"name": "balance.list"`) {
-			t.Fatalf("schema invocation %v: exit=%d stderr=%q out=%s", args, code, errOut, out)
+	valid := []struct {
+		args []string
+		name string
+	}{
+		{[]string{"schema", "balances"}, "balance.list"},
+		{[]string{"balances", "--schema"}, "balance.list"},
+		{[]string{"merchants", "top", "--schema"}, "merchant.top"},
+		{[]string{"export", "tx", "--schema"}, "transaction.export"},
+		{[]string{"cache", "status", "--schema"}, "cache.status"},
+	}
+	for _, tc := range valid {
+		out, errOut, code := runCLI(t, tc.args...)
+		if code != 0 || !strings.Contains(out, `"name": "`+tc.name+`"`) {
+			t.Fatalf("schema invocation %v: exit=%d stderr=%q out=%s", tc.args, code, errOut, out)
 		}
 	}
 }

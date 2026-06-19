@@ -70,6 +70,8 @@ type CacheSummary struct {
 	LastSyncStatus string         `json:"last_sync_status,omitempty"`
 }
 
+const removedAccountStatus = "__lasso_removed"
+
 type BalanceRow struct {
 	AccountID string `json:"account_id"`
 	Name      string `json:"name"`
@@ -139,12 +141,12 @@ func (s *Store) CachedBalances(accountIDs []string) ([]BalanceRow, error) {
 		return []BalanceRow{}, nil
 	}
 	query := `SELECT a.id,coalesce(a.name,''),coalesce(a.last_four,''),coalesce(a.currency,''),coalesce(b.ledger,''),coalesce(b.available,''),coalesce(b.as_of,'')
-		FROM accounts a JOIN balances b ON b.account_id=a.id`
-	args := make([]any, len(accountIDs))
+		FROM accounts a LEFT JOIN balances b ON b.account_id=a.id WHERE coalesce(a.status,'') != ?`
+	args := []any{removedAccountStatus}
 	if accountIDs != nil {
-		query += " WHERE a.id IN (" + strings.TrimSuffix(strings.Repeat("?,", len(accountIDs)), ",") + ")"
-		for i, id := range accountIDs {
-			args[i] = id
+		query += " AND a.id IN (" + strings.TrimSuffix(strings.Repeat("?,", len(accountIDs)), ",") + ")"
+		for _, id := range accountIDs {
+			args = append(args, id)
 		}
 	}
 	rows, err := s.db.Query(query+" ORDER BY a.name", args...)
@@ -164,16 +166,33 @@ func (s *Store) CachedBalances(accountIDs []string) ([]BalanceRow, error) {
 }
 
 func (s *Store) PruneBalances(accountIDs []string) error {
-	if len(accountIDs) == 0 {
-		_, err := s.db.Exec(`DELETE FROM balances`)
+	tx, err := s.db.Begin()
+	if err != nil {
 		return err
+	}
+	defer tx.Rollback()
+	if len(accountIDs) == 0 {
+		if _, err := tx.Exec(`DELETE FROM balances`); err != nil {
+			return err
+		}
+		if _, err := tx.Exec(`UPDATE accounts SET status=?`, removedAccountStatus); err != nil {
+			return err
+		}
+		return tx.Commit()
 	}
 	args := make([]any, len(accountIDs))
 	for i, id := range accountIDs {
 		args[i] = id
 	}
-	_, err := s.db.Exec("DELETE FROM balances WHERE account_id NOT IN ("+strings.TrimSuffix(strings.Repeat("?,", len(accountIDs)), ",")+")", args...)
-	return err
+	placeholders := strings.TrimSuffix(strings.Repeat("?,", len(accountIDs)), ",")
+	if _, err := tx.Exec("DELETE FROM balances WHERE account_id NOT IN ("+placeholders+")", args...); err != nil {
+		return err
+	}
+	statusArgs := append([]any{removedAccountStatus}, args...)
+	if _, err := tx.Exec("UPDATE accounts SET status=? WHERE id NOT IN ("+placeholders+")", statusArgs...); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 func (s *Store) UpsertTransactions(account teller.Account, txs []teller.Transaction) error {
