@@ -1454,6 +1454,10 @@ func (state runtimeState) enrollmentFor(account teller.Account) (teller.Enrollme
 }
 
 func pruneAccounts(db *store.Store, accounts []teller.Account) error {
+	// ponytail: an empty 200 may be transient; keep stale cache rather than erase it.
+	if len(accounts) == 0 {
+		return nil
+	}
 	ids := make([]string, len(accounts))
 	for i, account := range accounts {
 		ids[i] = account.ID

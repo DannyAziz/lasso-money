@@ -91,6 +91,18 @@ func TestLoadEnrollmentsRejectsInvalidLegacyShape(t *testing.T) {
 	}
 }
 
+func TestAddEnrollmentExplainsIDLessLegacyFile(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "enrollment.json")
+	data, _ := json.Marshal(Enrollment{AccessToken: "legacy_token"})
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	err := AddEnrollment(path, Enrollment{ID: "enr_2", AccessToken: "token_2"})
+	if err == nil || !strings.Contains(err.Error(), "reconnect it before adding another") {
+		t.Fatalf("err = %v", err)
+	}
+}
+
 func TestEnrollmentValidation(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "enrollment.json")
 	for name, enrollments := range map[string][]Enrollment{

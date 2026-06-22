@@ -93,6 +93,11 @@ func AddEnrollment(path string, enrollment Enrollment) error {
 	if err != nil && !os.IsNotExist(err) {
 		return err
 	}
+	for _, existing := range enrollments {
+		if existing.ID == "" {
+			return fmt.Errorf("existing legacy enrollment has no id; reconnect it before adding another")
+		}
+	}
 	for i, existing := range enrollments {
 		if existing.ID == enrollment.ID {
 			enrollments[i] = enrollment

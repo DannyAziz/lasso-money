@@ -134,6 +134,30 @@ func TestInvalidEnrollmentFileCannotPruneCache(t *testing.T) {
 	}
 }
 
+func TestEmptyLiveAccountListDoesNotPruneCache(t *testing.T) {
+	configPath, dbPath := testSetup(t)
+	seedCache(t, dbPath)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`[]`))
+	}))
+	defer server.Close()
+	file, _ := os.OpenFile(configPath, os.O_APPEND|os.O_WRONLY, 0)
+	_, _ = fmt.Fprintf(file, "TELLER_BASE_URL=%s\n", server.URL)
+	_ = file.Close()
+	if _, errOut, code := runCLI(t, "balances", "--live", "--config", configPath); code != 0 {
+		t.Fatalf("exit=%d stderr=%q", code, errOut)
+	}
+	cache, err := store.Open(dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cache.Close()
+	accounts, err := cache.CachedAccounts()
+	if err != nil || len(accounts) != 1 || accounts[0].Status == "__lasso_removed" {
+		t.Fatalf("accounts = %#v, err = %v", accounts, err)
+	}
+}
+
 func TestBalancesRoutesMultipleEnrollmentsAndPrunesUnion(t *testing.T) {
 	configPath, dbPath := testSetup(t)
 	cfg, _ := os.ReadFile(configPath)
