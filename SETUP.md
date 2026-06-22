@@ -31,7 +31,7 @@ If lasso runs on the same laptop, the fastest path is:
 curl -fsSL https://raw.githubusercontent.com/DannyAziz/lasso-money/main/install.sh | sh
 lasso init      # then edit ~/.lasso/config.env with your app ID (+ cert paths)
 lasso doctor    # follow its output until it prints "ready"
-lasso connect   # link a bank in the browser
+lasso connect   # link a bank in the browser; repeat for more banks
 lasso sync      # cache transactions locally
 ```
 
@@ -160,8 +160,10 @@ If the CLI runs on a remote/headless machine, have the human port-forward
 first: `ssh -L 8765:127.0.0.1:8765 <host>` then open the URL locally.
 
 On success the command prints the final envelope (`"command": "connect"`)
-with the enrollment metadata, and saves the access token to
-`~/.lasso/enrollment.json` (chmod 600). The token is never printed.
+with the enrollment metadata, and adds the access token to
+`~/.lasso/enrollment.json` (chmod 600). Repeat the command for another bank;
+reconnecting the same enrollment updates its entry. Existing single-enrollment
+files are migrated automatically. Tokens are never printed.
 
 ## Step 4 — verify and sync
 

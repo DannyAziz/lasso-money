@@ -1,6 +1,7 @@
 package teller
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -51,6 +52,58 @@ func TestSaveLoadEnrollmentPermissions(t *testing.T) {
 	}
 	if got.AccessToken != want.AccessToken || got.ID != want.ID {
 		t.Fatalf("loaded %#v", got)
+	}
+}
+
+func TestAddEnrollmentMigratesLegacyAndOnlyReplacesSameID(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "enrollment.json")
+	legacy := Enrollment{ID: "enr_1", InstitutionID: "bank_1", AccessToken: "token_1"}
+	data, _ := json.Marshal(legacy)
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := AddEnrollment(path, Enrollment{ID: "enr_2", InstitutionID: "bank_1", AccessToken: "token_2"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := AddEnrollment(path, Enrollment{ID: "enr_1", InstitutionID: "bank_1", AccessToken: "token_1_new"}); err != nil {
+		t.Fatal(err)
+	}
+	enrollments, err := LoadEnrollments(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(enrollments) != 2 || enrollments[0].AccessToken != "token_1_new" || enrollments[1].AccessToken != "token_2" {
+		t.Fatalf("enrollments = %#v", enrollments)
+	}
+	var file EnrollmentFile
+	if data, err := os.ReadFile(path); err != nil || json.Unmarshal(data, &file) != nil || len(file.Enrollments) != 2 {
+		t.Fatalf("file is not canonical: %s, err=%v", data, err)
+	}
+}
+
+func TestLoadEnrollmentsRejectsInvalidLegacyShape(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "enrollment.json")
+	if err := os.WriteFile(path, []byte(`{"access_token":[]}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if enrollments, err := LoadEnrollments(path); err == nil || enrollments != nil {
+		t.Fatalf("enrollments = %#v, err = %v; want error", enrollments, err)
+	}
+}
+
+func TestEnrollmentValidation(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "enrollment.json")
+	for name, enrollments := range map[string][]Enrollment{
+		"empty":         {},
+		"missing token": {{ID: "enr_1"}},
+		"missing id":    {{ID: "enr_1", AccessToken: "a"}, {AccessToken: "b"}},
+		"duplicate id":  {{ID: "enr_1", AccessToken: "a"}, {ID: "enr_1", AccessToken: "b"}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			if err := SaveEnrollments(path, enrollments); err == nil {
+				t.Fatal("want validation error")
+			}
+		})
 	}
 }
 

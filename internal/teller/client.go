@@ -129,10 +129,12 @@ func (c *Client) ListAccounts(enrollment Enrollment) ([]Account, error) {
 	}
 	accounts := make([]Account, 0, len(raw))
 	for _, r := range raw {
-		enrollmentID := r.EnrollmentID
-		if enrollmentID == "" {
-			enrollmentID = enrollment.ID
+		if enrollment.ID != "" && r.EnrollmentID != "" && r.EnrollmentID != enrollment.ID {
+			return nil, fmt.Errorf("account %s returned enrollment_id %q for enrollment %q", r.ID, r.EnrollmentID, enrollment.ID)
 		}
+		// A singleton legacy credential may have no enrollment ID. Keep its
+		// account routing key blank so later calls use that same credential.
+		enrollmentID := enrollment.ID
 		accounts = append(accounts, Account{
 			ID:              r.ID,
 			EnrollmentID:    enrollmentID,

@@ -136,7 +136,7 @@ func Run(ctx context.Context, opts Options) (teller.Enrollment, error) {
 		if res.err != nil {
 			return teller.Enrollment{}, res.err
 		}
-		if err := teller.SaveEnrollment(opts.EnrollmentPath, res.enrollment); err != nil {
+		if err := teller.AddEnrollment(opts.EnrollmentPath, res.enrollment); err != nil {
 			return teller.Enrollment{}, err
 		}
 		return res.enrollment, nil

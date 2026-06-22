@@ -19,7 +19,7 @@ lasso cashflow --since 6mo
 lasso export tx --since month --format csv --out transactions.csv
 ```
 
-Lasso only reads from Teller. Your configuration, enrollment token, and local account, balance, transaction, and sync metadata cache stay in `~/.lasso` on your machine.
+Lasso only reads from Teller. Your configuration, enrollment tokens, and local account, balance, transaction, and sync metadata cache stay in `~/.lasso` on your machine.
 
 ## Install
 
@@ -89,13 +89,13 @@ lasso doctor
 
 Follow its suggested fix until it reports `ready`.
 
-### 4. Link your bank
+### 4. Link your banks
 
 ```bash
 lasso connect
 ```
 
-Your browser will open Teller Connect. Complete the bank login there; Lasso never asks you to paste your banking credentials into the terminal.
+Your browser will open Teller Connect. Complete the bank login there; Lasso never asks you to paste your banking credentials into the terminal. Run `lasso connect` again for each additional bank or login. Reconnecting the same enrollment updates its saved credential instead of creating a duplicate.
 
 For Teller's sandbox, use username `username` and password `password`.
 
@@ -153,7 +153,7 @@ Lasso writes only to local files:
 
 ```text
 ~/.lasso/config.env       Teller application settings
-~/.lasso/enrollment.json Teller enrollment token
+~/.lasso/enrollment.json Teller enrollment tokens
 ~/.lasso/lasso.db        SQLite account, balance, transaction, and sync cache
 ```
 

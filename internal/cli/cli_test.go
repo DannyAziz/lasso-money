@@ -75,6 +75,121 @@ func runCLI(t *testing.T, args ...string) (string, string, int) {
 	return out.String(), errOut.String(), code
 }
 
+func TestAccountsListsMultipleEnrollments(t *testing.T) {
+	configPath, _ := testSetup(t)
+	cfg, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	enrollmentPath := strings.TrimSpace(strings.Split(strings.Split(string(cfg), "TELLER_ENROLLMENT_PATH=")[1], "\n")[0])
+	if err := teller.AddEnrollment(enrollmentPath, teller.Enrollment{ID: "enr_2", AccessToken: "token_2"}); err != nil {
+		t.Fatal(err)
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		token, _, _ := r.BasicAuth()
+		switch token {
+		case "token_test":
+			_, _ = w.Write([]byte(`[{"id":"acc_1","enrollment_id":"enr_1","name":"Checking"}]`))
+		case "token_2":
+			_, _ = w.Write([]byte(`[{"id":"acc_2","enrollment_id":"enr_2","name":"Savings"}]`))
+		default:
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+		}
+	}))
+	defer server.Close()
+	file, err := os.OpenFile(configPath, os.O_APPEND|os.O_WRONLY, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = fmt.Fprintf(file, "TELLER_BASE_URL=%s\n", server.URL)
+	_ = file.Close()
+	if err != nil {
+		t.Fatal(err)
+	}
+	out, errOut, code := runCLI(t, "accounts", "--format", "json", "--config", configPath)
+	if code != 0 || !strings.Contains(out, "acc_1") || !strings.Contains(out, "acc_2") {
+		t.Fatalf("exit=%d stderr=%q out=%s", code, errOut, out)
+	}
+}
+
+func TestInvalidEnrollmentFileCannotPruneCache(t *testing.T) {
+	configPath, dbPath := testSetup(t)
+	seedCache(t, dbPath)
+	cfg, _ := os.ReadFile(configPath)
+	enrollmentPath := strings.TrimSpace(strings.Split(strings.Split(string(cfg), "TELLER_ENROLLMENT_PATH=")[1], "\n")[0])
+	if err := os.WriteFile(enrollmentPath, []byte(`{"access_token":[]}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, code := runCLI(t, "balances", "--live", "--config", configPath); code == 0 {
+		t.Fatal("invalid enrollment file should fail")
+	}
+	cache, err := store.Open(dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cache.Close()
+	accounts, err := cache.CachedAccounts()
+	if err != nil || len(accounts) != 1 || accounts[0].Status == "__lasso_removed" {
+		t.Fatalf("accounts = %#v, err = %v", accounts, err)
+	}
+}
+
+func TestBalancesRoutesMultipleEnrollmentsAndPrunesUnion(t *testing.T) {
+	configPath, dbPath := testSetup(t)
+	cfg, _ := os.ReadFile(configPath)
+	enrollmentPath := strings.TrimSpace(strings.Split(strings.Split(string(cfg), "TELLER_ENROLLMENT_PATH=")[1], "\n")[0])
+	if err := teller.AddEnrollment(enrollmentPath, teller.Enrollment{ID: "enr_2", AccessToken: "token_2"}); err != nil {
+		t.Fatal(err)
+	}
+	cache, _ := store.Open(dbPath)
+	_ = cache.Migrate()
+	stale := teller.Account{ID: "acc_stale", EnrollmentID: "enr_old", Name: "Stale"}
+	_ = cache.UpsertAccounts([]teller.Account{stale})
+	_ = cache.UpsertBalance(stale, teller.Balance{Ledger: "999"})
+	_ = cache.Close()
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		token, _, _ := r.BasicAuth()
+		if r.URL.Path == "/accounts" {
+			if token == "token_test" {
+				_, _ = w.Write([]byte(`[{"id":"acc_1","enrollment_id":"enr_1","name":"Checking"}]`))
+			} else {
+				_, _ = w.Write([]byte(`[{"id":"acc_2","enrollment_id":"enr_2","name":"Savings"}]`))
+			}
+			return
+		}
+		if (r.URL.Path == "/accounts/acc_1/balances" && token == "token_test") || (r.URL.Path == "/accounts/acc_2/balances" && token == "token_2") {
+			_, _ = w.Write([]byte(`{"ledger":"10.00"}`))
+			return
+		}
+		http.Error(w, "wrong token", http.StatusUnauthorized)
+	}))
+	defer server.Close()
+	file, _ := os.OpenFile(configPath, os.O_APPEND|os.O_WRONLY, 0)
+	_, _ = fmt.Fprintf(file, "TELLER_BASE_URL=%s\n", server.URL)
+	_ = file.Close()
+	out, errOut, code := runCLI(t, "balances", "--live", "--format", "json", "--config", configPath)
+	if code != 0 || !strings.Contains(out, "acc_1") || !strings.Contains(out, "acc_2") || strings.Contains(out, "acc_stale") {
+		t.Fatalf("exit=%d stderr=%q out=%s", code, errOut, out)
+	}
+}
+
+func TestWhoamiPreservesSingleShapeAndUsesArrayForMultiple(t *testing.T) {
+	configPath, _ := testSetup(t)
+	out, errOut, code := runCLI(t, "whoami", "--format", "json", "--config", configPath)
+	if code != 0 || strings.Contains(out, `"data": [`) {
+		t.Fatalf("single: exit=%d stderr=%q out=%s", code, errOut, out)
+	}
+	cfg, _ := os.ReadFile(configPath)
+	enrollmentPath := strings.TrimSpace(strings.Split(strings.Split(string(cfg), "TELLER_ENROLLMENT_PATH=")[1], "\n")[0])
+	if err := teller.AddEnrollment(enrollmentPath, teller.Enrollment{ID: "enr_2", AccessToken: "token_2"}); err != nil {
+		t.Fatal(err)
+	}
+	out, errOut, code = runCLI(t, "whoami", "--format", "json", "--config", configPath)
+	if code != 0 || !strings.Contains(out, `"data": [`) || strings.Contains(out, "token_test") || strings.Contains(out, "token_2\"") {
+		t.Fatalf("multiple: exit=%d stderr=%q out=%s", code, errOut, out)
+	}
+}
+
 func TestBalanceCacheFresh(t *testing.T) {
 	now := time.Now()
 	fresh := []store.BalanceRow{{AsOf: now.Add(-4 * time.Minute).Format(time.RFC3339Nano)}}

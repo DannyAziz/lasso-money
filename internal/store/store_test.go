@@ -26,6 +26,36 @@ func TestCachedBalancesIncludesAccountsWithoutBalances(t *testing.T) {
 	}
 }
 
+func TestPruneBalancesUsesCompleteAccountUnion(t *testing.T) {
+	s, err := Open(filepath.Join(t.TempDir(), "test.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	if err := s.Migrate(); err != nil {
+		t.Fatal(err)
+	}
+	accounts := []teller.Account{
+		{ID: "acc_old", EnrollmentID: "enr_1", Status: "open"},
+		{ID: "acc_keep", EnrollmentID: "enr_2", Status: "open"},
+	}
+	if err := s.UpsertAccounts(accounts); err != nil {
+		t.Fatal(err)
+	}
+	for _, account := range accounts {
+		if err := s.UpsertBalance(account, teller.Balance{Ledger: "1.00"}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := s.PruneBalances([]string{"acc_keep"}); err != nil {
+		t.Fatal(err)
+	}
+	rows, err := s.CachedBalances(nil)
+	if err != nil || len(rows) != 1 || rows[0].AccountID != "acc_keep" {
+		t.Fatalf("balances = %#v, err = %v", rows, err)
+	}
+}
+
 func TestStoreSyncQuerySpend(t *testing.T) {
 	s, err := Open(filepath.Join(t.TempDir(), "test.db"))
 	if err != nil {
