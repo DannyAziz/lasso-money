@@ -7,6 +7,35 @@ import (
 	"time"
 )
 
+func TestListAccountsSupportsLegacyEnrollmentWithoutID(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`[{"id":"acc_1","enrollment_id":"enr_real"}]`))
+	}))
+	defer server.Close()
+	client, err := NewClient(Options{BaseURL: server.URL, Env: "sandbox"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	accounts, err := client.ListAccounts(Enrollment{AccessToken: "token"})
+	if err != nil || len(accounts) != 1 || accounts[0].EnrollmentID != "" {
+		t.Fatalf("accounts = %#v, err = %v", accounts, err)
+	}
+}
+
+func TestListAccountsRejectsConflictingEnrollmentID(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`[{"id":"acc_1","enrollment_id":"enr_wrong"}]`))
+	}))
+	defer server.Close()
+	client, err := NewClient(Options{BaseURL: server.URL, Env: "sandbox"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := client.ListAccounts(Enrollment{ID: "enr_right", AccessToken: "token"}); err == nil {
+		t.Fatal("want conflicting enrollment ID error")
+	}
+}
+
 func TestListAccountsAndBalances(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		user, pass, ok := r.BasicAuth()

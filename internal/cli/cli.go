@@ -31,7 +31,7 @@ type App struct {
 	Format string
 }
 
-const schemaVersion = "2026-06-12"
+const schemaVersion = "2026-06-22"
 
 type envelope struct {
 	OK            bool             `json:"ok"`
@@ -60,7 +60,7 @@ type runtimeState struct {
 	Paths          config.Paths
 	Env            config.Env
 	EnrollmentPath string
-	Enrollment     teller.Enrollment
+	Enrollments    []teller.Enrollment
 	Client         *teller.Client
 }
 
@@ -236,8 +236,8 @@ Commands:
   schema      Print command schemas for agents
   init        Create local config template
   doctor      Check local Teller configuration without printing secrets
-  connect     Launch Teller Connect and save enrollment locally
-  whoami      Print saved enrollment metadata with access token redacted
+  connect     Launch Teller Connect and add or update an enrollment
+  whoami      Print saved enrollments with access tokens redacted
   accounts    List linked Teller accounts
   balances    Show cached balances, refreshing after five minutes
   tx          List transactions from cache, or live with --live
@@ -424,8 +424,8 @@ func (a App) schema(args []string) error {
 func commandSchemas() map[string]any {
 	return map[string]any{
 		"doctor":             schemaEntry("doctor", "Check local setup; data is a list of checks with status ok|missing|warn|skipped and fix hints", []string{"--config"}),
-		"connect":            schemaEntry("connect", "Launch Teller Connect; with --format json emits a connect.url event line, then the final envelope", []string{"--config", "--port", "--timeout", "--no-open"}),
-		"whoami":             schemaEntry("whoami", "Print saved enrollment metadata with access token redacted", []string{"--config"}),
+		"connect":            schemaEntry("connect", "Launch Teller Connect and add or update an enrollment; with --format json emits a connect.url event line, then the final envelope", []string{"--config", "--port", "--timeout", "--no-open"}),
+		"whoami":             schemaEntry("whoami", "Print saved enrollments with access tokens redacted", []string{"--config"}),
 		"account.list":       schemaEntry("account.list", "List live Teller accounts", []string{"--config"}),
 		"balance.list":       schemaEntry("balance.list", "List balances from the five-minute cache, refreshing when stale", []string{"--config", "--live"}),
 		"sync.run":           schemaEntry("sync.run", "Sync Teller accounts, balances, and transactions into local SQLite", []string{"--config", "--account", "--since", "--from", "--to"}),
@@ -495,7 +495,7 @@ TELLER_KEY_PATH=
 # Optional: override where the local SQLite cache is stored.
 # TELLER_DB_PATH=~/.lasso/lasso.db
 
-# Optional: override where the Teller Connect enrollment token is stored.
+# Optional: override where the Teller Connect enrollment tokens are stored.
 # TELLER_ENROLLMENT_PATH=~/.lasso/enrollment.json
 `) + "\n"
 	if err := os.WriteFile(paths.ConfigFile, []byte(body), 0o600); err != nil {
@@ -733,7 +733,7 @@ func (a App) connect(args []string) error {
 		})
 	}
 	fmt.Fprintf(a.Out, "linked %s (%s)\n", cmp.Or(enrollment.InstitutionName, "institution"), enrollment.ID)
-	fmt.Fprintf(a.Out, "saved enrollment: %s\n", enrollmentPath)
+	fmt.Fprintf(a.Out, "saved enrollments: %s\n", enrollmentPath)
 	return nil
 }
 
@@ -748,20 +748,24 @@ func (a App) whoami(args []string) error {
 	if err != nil {
 		return err
 	}
-	out := map[string]any{
-		"id":               state.Enrollment.ID,
-		"institution_id":   state.Enrollment.InstitutionID,
-		"institution_name": state.Enrollment.InstitutionName,
-		"provider":         state.Enrollment.Provider,
-		"access_token":     teller.MaskToken(state.Enrollment.AccessToken),
-		"path":             state.EnrollmentPath,
+	out := make([]map[string]any, 0, len(state.Enrollments))
+	for _, enrollment := range state.Enrollments {
+		out = append(out, map[string]any{
+			"id": enrollment.ID, "institution_id": enrollment.InstitutionID,
+			"institution_name": enrollment.InstitutionName, "provider": enrollment.Provider,
+			"access_token": teller.MaskToken(enrollment.AccessToken), "path": state.EnrollmentPath,
+		})
+	}
+	var data any = out
+	if len(out) == 1 {
+		data = out[0]
 	}
 	if a.envelopeJSON() {
-		return a.writeEnvelope("whoami", out, map[string]any{"source": "local"}, nil, []nextAction{{Command: "lasso accounts --format json", Description: "List live Teller accounts"}})
+		return a.writeEnvelope("whoami", data, map[string]any{"source": "local", "count": len(out)}, nil, []nextAction{{Command: "lasso accounts --format json", Description: "List live Teller accounts"}})
 	}
 	enc := json.NewEncoder(a.Out)
 	enc.SetIndent("", "  ")
-	return enc.Encode(out)
+	return enc.Encode(data)
 }
 
 func (a App) accounts(args []string) error {
@@ -775,9 +779,9 @@ func (a App) accounts(args []string) error {
 	if err != nil {
 		return err
 	}
-	accounts, err := state.Client.ListAccounts(state.Enrollment)
+	accounts, err := state.listAccounts()
 	if err != nil {
-		return explainTellerError(err)
+		return err
 	}
 	if a.envelopeJSON() {
 		return a.writeRows("account.list", accounts, len(accounts), "live", []nextAction{{Command: "lasso sync --format json", Description: "Cache live account, balance, and transaction data"}})
@@ -828,15 +832,19 @@ func (a App) transactions(args []string) error {
 	if err != nil {
 		return err
 	}
-	accounts, err := state.Client.ListAccounts(state.Enrollment)
+	accounts, err := state.listAccounts()
 	if err != nil {
-		return explainTellerError(err)
+		return err
 	}
 	account, err := selectAccount(accounts, *accountSelector)
 	if err != nil {
 		return err
 	}
-	txs, err := state.Client.ListTransactions(state.Enrollment, account.ID, startDate, endDate, 500)
+	enrollment, err := state.enrollmentFor(account)
+	if err != nil {
+		return err
+	}
+	txs, err := state.Client.ListTransactions(enrollment, account.ID, startDate, endDate, 500)
 	if err != nil {
 		return explainTellerError(err)
 	}
@@ -891,17 +899,19 @@ func (a App) balances(args []string) error {
 		if err != nil {
 			return err
 		}
-		accounts, err := state.Client.ListAccounts(state.Enrollment)
+		accounts, err := state.listAccounts()
 		if err != nil {
-			return explainTellerError(err)
+			return err
 		}
 		if err := db.UpsertAccounts(accounts); err != nil {
 			return err
 		}
-		accountIDs := make([]string, len(accounts))
-		for i, account := range accounts {
-			accountIDs[i] = account.ID
-			balance, err := state.Client.GetBalance(state.Enrollment, account.ID)
+		for _, account := range accounts {
+			enrollment, err := state.enrollmentFor(account)
+			if err != nil {
+				return err
+			}
+			balance, err := state.Client.GetBalance(enrollment, account.ID)
 			if err != nil {
 				return explainTellerError(err)
 			}
@@ -909,10 +919,10 @@ func (a App) balances(args []string) error {
 				return err
 			}
 		}
-		if err := db.PruneBalances(accountIDs); err != nil {
+		if err := pruneAccounts(db, accounts); err != nil {
 			return err
 		}
-		rows, err = db.CachedBalances(accountIDs)
+		rows, err = db.CachedBalances(nil)
 		if err != nil {
 			return err
 		}
@@ -968,18 +978,14 @@ func (a App) sync(args []string) error {
 	}
 	defer db.Close()
 
-	accounts, err := state.Client.ListAccounts(state.Enrollment)
+	accounts, err := state.listAccounts()
 	if err != nil {
-		return explainTellerError(err)
+		return err
 	}
 	if err := db.UpsertAccounts(accounts); err != nil {
 		return err
 	}
-	accountIDs := make([]string, len(accounts))
-	for i, account := range accounts {
-		accountIDs[i] = account.ID
-	}
-	if err := db.PruneBalances(accountIDs); err != nil {
+	if err := pruneAccounts(db, accounts); err != nil {
 		return err
 	}
 	var selected []teller.Account
@@ -1012,13 +1018,17 @@ func (a App) sync(args []string) error {
 		if runErr != nil {
 			warn("could not record sync run for %s: %v", account.Name, runErr)
 		}
-		balance, berr := state.Client.GetBalance(state.Enrollment, account.ID)
+		enrollment, err := state.enrollmentFor(account)
+		if err != nil {
+			return err
+		}
+		balance, berr := state.Client.GetBalance(enrollment, account.ID)
 		if berr != nil {
 			warn("balance fetch failed for %s: %v", account.Name, berr)
 		} else if uerr := db.UpsertBalance(account, balance); uerr != nil {
 			warn("balance cache write failed for %s: %v", account.Name, uerr)
 		}
-		txs, err := state.Client.ListTransactions(state.Enrollment, account.ID, accountStart, endDate, 500)
+		txs, err := state.Client.ListTransactions(enrollment, account.ID, accountStart, endDate, 500)
 		if err != nil {
 			_ = db.FinishSyncRun(runID, "failed", 0)
 			return explainTellerError(err)
@@ -1402,11 +1412,11 @@ func loadState(configPath string, withClient bool) (runtimeState, error) {
 		return runtimeState{}, configErrorf("run `lasso init` to create a config", "load config %s: %v", paths.ConfigFile, err)
 	}
 	enrollmentPath := config.ResolveEnrollmentPath(paths, cfg)
-	enrollment, err := teller.LoadEnrollment(enrollmentPath)
+	enrollments, err := teller.LoadEnrollments(enrollmentPath)
 	if err != nil {
 		return runtimeState{}, configErrorf("run `lasso connect` to enroll an institution", "load enrollment %s: %v", enrollmentPath, err)
 	}
-	state := runtimeState{Paths: paths, Env: cfg, EnrollmentPath: enrollmentPath, Enrollment: enrollment}
+	state := runtimeState{Paths: paths, Env: cfg, EnrollmentPath: enrollmentPath, Enrollments: enrollments}
 	if withClient {
 		client, err := teller.NewClient(teller.Options{
 			BaseURL:  cfg.GetDefault("TELLER_BASE_URL", teller.DefaultBaseURL),
@@ -1420,6 +1430,39 @@ func loadState(configPath string, withClient bool) (runtimeState, error) {
 		state.Client = client
 	}
 	return state, nil
+}
+
+func (state runtimeState) listAccounts() ([]teller.Account, error) {
+	var accounts []teller.Account
+	for _, enrollment := range state.Enrollments {
+		rows, err := state.Client.ListAccounts(enrollment)
+		if err != nil {
+			return nil, explainTellerError(err)
+		}
+		accounts = append(accounts, rows...)
+	}
+	return accounts, nil
+}
+
+func (state runtimeState) enrollmentFor(account teller.Account) (teller.Enrollment, error) {
+	for _, enrollment := range state.Enrollments {
+		if enrollment.ID == account.EnrollmentID {
+			return enrollment, nil
+		}
+	}
+	return teller.Enrollment{}, configErrorf("run `lasso connect` to restore the institution", "no enrollment token for account %s", account.ID)
+}
+
+func pruneAccounts(db *store.Store, accounts []teller.Account) error {
+	// ponytail: an empty 200 may be transient; keep stale cache rather than erase it.
+	if len(accounts) == 0 {
+		return nil
+	}
+	ids := make([]string, len(accounts))
+	for i, account := range accounts {
+		ids[i] = account.ID
+	}
+	return db.PruneBalances(ids)
 }
 
 func counterpartyName(details map[string]any) string {

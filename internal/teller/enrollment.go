@@ -17,36 +17,94 @@ type Enrollment struct {
 	Provider        string `json:"provider,omitempty"`
 }
 
-func LoadEnrollment(path string) (Enrollment, error) {
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return Enrollment{}, err
-	}
-	var enrollment Enrollment
-	if err := json.Unmarshal(data, &enrollment); err != nil {
-		return Enrollment{}, err
-	}
-	if enrollment.AccessToken == "" {
-		return Enrollment{}, fmt.Errorf("enrollment %s is missing access_token", path)
-	}
-	if enrollment.Provider == "" {
-		enrollment.Provider = "teller"
-	}
-	return enrollment, nil
+type EnrollmentFile struct {
+	Enrollments []Enrollment `json:"enrollments"`
 }
 
-func SaveEnrollment(path string, enrollment Enrollment) error {
-	if enrollment.AccessToken == "" {
-		return fmt.Errorf("refusing to save enrollment without access token")
+func LoadEnrollments(path string) ([]Enrollment, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, err
 	}
-	if enrollment.Provider == "" {
-		enrollment.Provider = "teller"
+	var file EnrollmentFile
+	if err := json.Unmarshal(data, &file); err != nil || file.Enrollments == nil {
+		var legacy Enrollment
+		if legacyErr := json.Unmarshal(data, &legacy); legacyErr != nil {
+			return nil, legacyErr
+		}
+		file.Enrollments = []Enrollment{legacy}
 	}
-	data, err := json.MarshalIndent(enrollment, "", "  ")
+	return validateEnrollments(path, file.Enrollments)
+}
+
+func validateEnrollments(path string, enrollments []Enrollment) ([]Enrollment, error) {
+	if len(enrollments) == 0 {
+		return nil, fmt.Errorf("enrollment %s contains no enrollments", path)
+	}
+	seen := map[string]bool{}
+	for i := range enrollments {
+		enrollments[i].AccessToken = strings.TrimSpace(enrollments[i].AccessToken)
+		if enrollments[i].AccessToken == "" {
+			return nil, fmt.Errorf("enrollment %s is missing access_token", path)
+		}
+		if enrollments[i].Provider == "" {
+			enrollments[i].Provider = "teller"
+		}
+		if len(enrollments) > 1 && strings.TrimSpace(enrollments[i].ID) == "" {
+			return nil, fmt.Errorf("enrollment %s has an item without id", path)
+		}
+		if enrollments[i].ID != "" && seen[enrollments[i].ID] {
+			return nil, fmt.Errorf("enrollment %s contains duplicate id %q", path, enrollments[i].ID)
+		}
+		seen[enrollments[i].ID] = true
+	}
+	return enrollments, nil
+}
+
+func SaveEnrollments(path string, enrollments []Enrollment) error {
+	enrollments, err := validateEnrollments(path, enrollments)
+	if err != nil {
+		return err
+	}
+	data, err := json.MarshalIndent(EnrollmentFile{Enrollments: enrollments}, "", "  ")
 	if err != nil {
 		return err
 	}
 	return writeSecretFile(path, append(data, '\n'))
+}
+
+func LoadEnrollment(path string) (Enrollment, error) {
+	enrollments, err := LoadEnrollments(path)
+	if err != nil {
+		return Enrollment{}, err
+	}
+	if len(enrollments) != 1 {
+		return Enrollment{}, fmt.Errorf("enrollment %s contains %d enrollments", path, len(enrollments))
+	}
+	return enrollments[0], nil
+}
+
+func SaveEnrollment(path string, enrollment Enrollment) error {
+	return SaveEnrollments(path, []Enrollment{enrollment})
+}
+
+func AddEnrollment(path string, enrollment Enrollment) error {
+	enrollments, err := LoadEnrollments(path)
+	if err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	for _, existing := range enrollments {
+		if existing.ID == "" {
+			return fmt.Errorf("existing legacy enrollment has no id; reconnect it before adding another")
+		}
+	}
+	for i, existing := range enrollments {
+		if existing.ID == enrollment.ID {
+			enrollments[i] = enrollment
+			return SaveEnrollments(path, enrollments)
+		}
+	}
+	return SaveEnrollments(path, append(enrollments, enrollment))
 }
 
 func MaskToken(token string) string {
@@ -81,8 +139,6 @@ func NormalizeConnectPayload(payload map[string]any) (Enrollment, error) {
 		}
 	}
 	if enrollment.ID == "" {
-		// The ID is printed unredacted by whoami/connect, so it must never be
-		// derived from the secret access token.
 		enrollment.ID = "local_" + rand.Text()
 	}
 	return enrollment, nil
